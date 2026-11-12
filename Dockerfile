@@ -1,5 +1,5 @@
 # ---- Build stage ----
-FROM elixir:1.15.8-alpine AS build
+FROM elixir:1.17.2-alpine AS build
 
 WORKDIR /app
 
@@ -15,8 +15,11 @@ RUN mix deps.get --only prod
 COPY app/lib ./lib
 COPY app/config ./config
 
-# Build the release
-RUN mix release poc_app --overwrite
+# Compile deps one at a time to avoid module identity race condition under QEMU
+RUN mix deps.compile --no-parallel
+
+# Build the release (deps already compiled above)
+RUN mix release poc_app --overwrite --no-compile
 
 # ---- Runtime stage ----
 FROM alpine:3.20
