@@ -4,7 +4,7 @@ A minimal Elixir application deployed as a Docker container on Cloudflare Contai
 
 ## What's here
 
-- **`app/`** — A minimal Elixir app using [Bandit](https://github.com/mtrikel/bandit) + [Plug](https://github.com/elixir-plug/plug) that serves two routes:
+- **`app/`** — A minimal Elixir app using raw `:gen_tcp` (zero external dependencies) that serves two routes:
   - `GET /` — returns `{"ok": true, "message": "Hello from Elixir on Cloudflare Containers"}`
   - `GET /health` — returns `200 ok` (used by the Worker for readiness checks)
 - **`src/index.ts`** — A Cloudflare Worker + Durable Object that manages the container lifecycle and proxies HTTP requests to it
@@ -14,7 +14,7 @@ A minimal Elixir application deployed as a Docker container on Cloudflare Contai
 ## Architecture
 
 ```
-Client → Cloudflare Worker → Durable Object → Container (Elixir/Bandit on :4000)
+Client → Cloudflare Worker → Durable Object → Container (Elixir/:gen_tcp on :4000)
 ```
 
 The Worker starts the container on first request, polls `/health` until it's ready, then forwards all requests to the Elixir app via TCP port 4000.
@@ -22,13 +22,14 @@ The Worker starts the container on first request, polls `/health` until it's rea
 ## Prerequisites
 
 - Cloudflare Workers **Paid** plan
-- [Docker](https://www.docker.com/) running locally
+- [Docker](https://www.docker.com/) running locally (native AMD64, or QEMU emulation)
 - Node.js (for Wrangler)
 
 ## Deploy
 
 ```bash
 npm install
+npx wrangler login
 npx wrangler deploy
 ```
 
@@ -46,12 +47,9 @@ curl https://elixir-cf-poc.<your-subdomain>.workers.dev/health
 
 First request may take 1-3s (cold start). Subsequent requests are instant while the container is warm.
 
-## Instance type
-
-Deployed on `lite` (¼ vCPU, 256 MiB RAM). If the BEAM VM OOMs on boot, bump to `basic` (1 GiB) in `src/index.ts`.
-
 ## Notes
 
-- Disk is **ephemeral** — data is lost when the container sleeps. Use Durable Object storage or R2 for persistence.
-- No built-in autoscaling yet — the Worker routes to a named singleton instance.
-- Container sleeps after 2 minutes of inactivity (configurable via `INACTIVITY_TIMEOUT_MS`).
+- Uses raw `:gen_tcp` instead of Plug/Bandit to avoid Elixir compiler bugs under QEMU emulation on Apple Silicon
+- Disk is **ephemeral** — data is lost when the container sleeps
+- No built-in autoscaling — the Worker routes to a named singleton instance
+- Container sleeps after 2 minutes of inactivity (configurable via `INACTIVITY_TIMEOUT_MS`)

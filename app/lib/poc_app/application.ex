@@ -7,7 +7,7 @@ defmodule PocApp.Application do
     port = String.to_integer(System.get_env("PORT", "4000"))
 
     children = [
-      {Bandit, plug: PocApp, port: port}
+      {PocApp.Server, port: port}
     ]
 
     opts = [strategy: :one_for_one, name: PocApp.Supervisor]

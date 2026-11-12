@@ -7,19 +7,11 @@ RUN mix local.hex --force && mix local.rebar --force
 
 ENV MIX_ENV=prod
 
-# Install dependencies first for better layer caching
-COPY app/mix.exs app/mix.lock* ./
-RUN mix deps.get --only prod
-
-# Copy application code
+COPY app/mix.exs ./
 COPY app/lib ./lib
 COPY app/config ./config
 
-# Compile deps one at a time to avoid module identity race condition under QEMU
-RUN mix deps.compile --no-parallel
-
-# Build the release (deps already compiled above)
-RUN mix release poc_app --overwrite --no-compile
+RUN mix release poc_app --overwrite
 
 # ---- Runtime stage ----
 FROM alpine:3.20
