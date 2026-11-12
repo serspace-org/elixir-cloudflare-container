@@ -1,5 +1,5 @@
 # ---- Build stage ----
-FROM elixir:1.18-alpine AS build
+FROM elixir:1.15.8-alpine AS build
 
 WORKDIR /app
 
@@ -15,11 +15,7 @@ RUN mix deps.get --only prod
 COPY app/lib ./lib
 COPY app/config ./config
 
-# Compile with --no-parallel to avoid module identity race condition
-# that triggers under QEMU emulation (AMD64 on Apple Silicon)
-RUN mix compile --no-parallel
-
-# Build the release (compilation already done above)
+# Build the release
 RUN mix release poc_app --overwrite
 
 # ---- Runtime stage ----
