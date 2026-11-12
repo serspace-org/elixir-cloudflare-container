@@ -1,5 +1,5 @@
 # ---- Build stage ----
-FROM --platform=linux/amd64 elixir:1.17-alpine AS build
+FROM elixir:1.17-alpine AS build
 
 WORKDIR /app
 
@@ -10,17 +10,16 @@ ENV MIX_ENV=prod
 # Install dependencies first for better layer caching
 COPY app/mix.exs app/mix.lock* ./
 RUN mix deps.get --only prod
-RUN mix deps.compile
 
-# Copy application code
+# Copy application code before compiling
 COPY app/lib ./lib
 COPY app/config ./config
 
-# Build the release
+# Compile deps + app and build release in one step
 RUN mix release poc_app --overwrite
 
 # ---- Runtime stage ----
-FROM --platform=linux/amd64 alpine:3.20
+FROM alpine:3.20
 
 RUN apk add --no-cache openssl ncurses-libs
 
