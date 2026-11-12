@@ -1,5 +1,5 @@
-# ---- Build stage ----
-FROM elixir:1.17.2-alpine AS build
+# ---- Build + Runtime (single stage) ----
+FROM elixir:1.17.2-alpine
 
 WORKDIR /app
 
@@ -11,16 +11,9 @@ COPY app/mix.exs ./
 COPY app/lib ./lib
 COPY app/config ./config
 
-RUN mix release poc_app --overwrite
-
-# ---- Runtime stage ----
-FROM alpine:3.20
-
-RUN apk add --no-cache openssl ncurses-libs
-
-WORKDIR /app
-COPY --from=build /app/_build/prod/rel/poc_app ./
+# Compile the app (zero external deps, just our 2 files)
+RUN mix compile
 
 EXPOSE 4000
 
-CMD ["./bin/poc_app", "start"]
+CMD ["mix", "run", "--no-halt"]
