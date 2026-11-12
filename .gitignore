@@ -1,0 +1,7 @@
+_build/
+deps/
+.elixir_ls/
+*.ez
+node_modules/
+.wrangler/
+.dev.vars
