@@ -20,10 +20,12 @@ defmodule AppWeb.Router do
     get "/", PageController, :home
   end
 
-  # Other scopes may use custom stacks.
-  # scope "/api", AppWeb do
-  #   pipe_through :api
-  # end
+  # Health check endpoint (used by the Worker for readiness checks)
+  scope "/", AppWeb do
+    pipe_through :api
+
+    get "/health", PageController, :health
+  end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development
   if Application.compile_env(:app, :dev_routes) do
