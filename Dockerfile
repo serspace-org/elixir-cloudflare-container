@@ -1,5 +1,5 @@
 # ---- Build stage ----
-FROM elixir:1.17.2-alpine AS build
+FROM elixir:1.18-alpine AS build
 
 WORKDIR /app
 
@@ -11,11 +11,15 @@ ENV MIX_ENV=prod
 COPY app/mix.exs app/mix.lock* ./
 RUN mix deps.get --only prod
 
-# Copy application code before compiling
+# Copy application code
 COPY app/lib ./lib
 COPY app/config ./config
 
-# Compile deps + app and build release in one step
+# Compile with --no-parallel to avoid module identity race condition
+# that triggers under QEMU emulation (AMD64 on Apple Silicon)
+RUN mix compile --no-parallel
+
+# Build the release (compilation already done above)
 RUN mix release poc_app --overwrite
 
 # ---- Runtime stage ----
