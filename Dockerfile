@@ -1,5 +1,5 @@
 # ---- Build stage ----
-FROM elixir:1.16-alpine AS build
+FROM elixir:1.17.2-alpine AS build
 
 WORKDIR /app
 
