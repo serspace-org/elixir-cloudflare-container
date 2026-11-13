@@ -6,8 +6,12 @@ defmodule App.Release do
   @app :app
 
   def migrate do
-    load_app()
-    Ecto.Migrator.with_repo(App.Repo, &Ecto.Migrator.run(&1, :up, all: true))
+    if System.get_env("DATABASE_URL") do
+      load_app()
+      Ecto.Migrator.with_repo(App.Repo, &Ecto.Migrator.run(&1, :up, all: true))
+    else
+      :skip
+    end
   end
 
   def rollback(repo, version) do
