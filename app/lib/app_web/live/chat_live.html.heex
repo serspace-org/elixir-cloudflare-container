@@ -1,0 +1,78 @@
+<div class="mx-auto max-w-2xl px-4 py-10">
+  <h1 class="text-2xl font-bold tracking-tight">Chat</h1>
+  <p class="mt-1 text-sm text-zinc-500">
+    LiveView over the <code>/live</code>
+    WebSocket, fanned out with <code>Phoenix.PubSub</code>
+    and persisted in Cloudflare D1.
+  </p>
+
+  <div
+    id="transport-info"
+    phx-hook="TransportInfo"
+    class={[
+      "mt-6 rounded-lg border p-4 text-sm",
+      @websocket? == false && "border-red-300 bg-red-50",
+      @websocket? != false && "border-zinc-200"
+    ]}
+  >
+    <dl class="grid grid-cols-2 gap-x-4 gap-y-2">
+      <dt class="text-zinc-500">Transport</dt>
+      <dd id="chat-transport" class="font-mono">
+        {@transport || "measuring…"}
+        <span :if={@websocket? == false} class="font-sans font-semibold text-red-700">
+          — not a WebSocket, the upgrade is failing
+        </span>
+      </dd>
+      <dt class="text-zinc-500">Nickname</dt>
+      <dd id="chat-nickname" class="font-mono">{@nickname}</dd>
+      <dt class="text-zinc-500">Online now</dt>
+      <dd id="chat-present" class="font-mono">{@present}</dd>
+      <dt class="text-zinc-500">Reconnects</dt>
+      <dd id="chat-reconnects" class="font-mono">{@reconnects}</dd>
+      <dt class="text-zinc-500">Node uptime</dt>
+      <dd id="chat-uptime" class="font-mono">{div(@node_uptime_ms, 1000)}s</dd>
+      <dt class="text-zinc-500">Persistence</dt>
+      <dd id="chat-durability" class="font-mono">
+        {if @d1_ready, do: "D1", else: "ephemeral (D1 unreachable)"}
+      </dd>
+    </dl>
+  </div>
+
+  <p :if={@error} id="chat-error" class="mt-4 text-sm text-red-700">{@error}</p>
+
+  <form id="chat-form" phx-submit="send" class="mt-6 flex gap-2">
+    <input
+      id="chat-input"
+      type="text"
+      name="body"
+      placeholder="Say something"
+      autocomplete="off"
+      required
+      maxlength="2000"
+      class="flex-1 rounded-md border border-zinc-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-500"
+    />
+    <button
+      type="submit"
+      class="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700"
+    >
+      Send
+    </button>
+  </form>
+
+  <div
+    id="chat-messages"
+    phx-update="stream"
+    class="mt-6 divide-y divide-zinc-200 border-t border-zinc-200 text-sm empty:hidden"
+  >
+    <div :for={{dom_id, message} <- @streams.messages} id={dom_id} class="py-2">
+      <span class="font-mono text-zinc-500">{message.nickname}:</span>
+      <span>{message.body}</span>
+    </div>
+  </div>
+
+  <p :if={@message_count == 0} class="mt-6 text-sm text-zinc-500">
+    No messages yet — send one, then open <a href="/probe" class="underline">/probe</a>
+    in another tab and watch it arrive over the
+    raw channel socket.
+  </p>
+</div>

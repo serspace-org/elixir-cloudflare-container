@@ -24,12 +24,14 @@ import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/app"
 import topbar from "../vendor/topbar"
+import {startChannelProbe} from "./channel_probe"
+import {TransportInfo} from "./transport_info"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks},
+  hooks: {...colocatedHooks, TransportInfo},
 })
 
 // Show progress bar on live navigation and form submits
@@ -45,6 +47,9 @@ liveSocket.connect()
 // >> liveSocket.enableLatencySim(1000)  // enabled for duration of browser session
 // >> liveSocket.disableLatencySim()
 window.liveSocket = liveSocket
+
+// Raw channel client for /probe (no-op on every other page).
+window.channelProbe = startChannelProbe()
 
 // The lines below enable quality of life phoenix_live_reload
 // development features:

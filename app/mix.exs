@@ -80,7 +80,7 @@ defmodule App.MixProject do
       setup: ["deps.get", "ecto.setup", "assets.setup", "assets.build"],
       "ecto.setup": ["ecto.create", "ecto.migrate", "run priv/repo/seeds.exs"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
-      test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
+      test: test_alias(),
       "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
       "assets.build": ["compile", "tailwind app", "esbuild app"],
       "assets.deploy": [
@@ -90,5 +90,16 @@ defmodule App.MixProject do
       ],
       precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]
     ]
+  end
+
+  # The app persists through Cloudflare D1; App.Repo is only supervised when
+  # DATABASE_URL is set (see App.Application.start/2). Setting up Postgres is
+  # pointless — and fatal — without it.
+  defp test_alias do
+    if System.get_env("DATABASE_URL") do
+      ["ecto.create --quiet", "ecto.migrate --quiet", "test"]
+    else
+      ["test"]
+    end
   end
 end

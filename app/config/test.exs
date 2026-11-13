@@ -20,6 +20,10 @@ config :app, AppWeb.Endpoint,
   secret_key_base: "AElg5yh82MT3VYZw5tjgYW0uGRWvKxDidRTL1z/b3nV0zv3H4M2q18Obp86Twj0P",
   server: false
 
+# Route App.D1's HTTP calls to a Req.Test stub instead of the real gateway;
+# see AppWeb.ChannelCase.
+config :app, :d1_req_options, plug: {Req.Test, App.D1}
+
 # In test we don't send emails
 config :app, App.Mailer, adapter: Swoosh.Adapters.Test
 

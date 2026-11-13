@@ -1,0 +1,54 @@
+<div class="mx-auto max-w-2xl px-4 py-10">
+  <h1 class="text-2xl font-bold tracking-tight">Channel probe</h1>
+  <p class="mt-1 text-sm text-zinc-500">
+    Plain JavaScript client on <code>/socket</code> — no LiveView involved, and no
+    long-poll fallback. If this page connects, WebSockets survive the Worker and
+    Durable Object hop.
+  </p>
+
+  <div id="channel-probe" data-room={@room} class="mt-8">
+    <dl class="grid grid-cols-2 gap-x-4 gap-y-2 rounded-lg border border-zinc-200 p-4 text-sm">
+      <dt class="text-zinc-500">Socket state</dt>
+      <dd id="probe-state" class="font-mono">connecting…</dd>
+      <dt class="text-zinc-500">Transport</dt>
+      <dd id="probe-transport" class="font-mono">—</dd>
+      <dt class="text-zinc-500">Nickname</dt>
+      <dd id="probe-nickname" class="font-mono">—</dd>
+      <dt class="text-zinc-500">Round trip</dt>
+      <dd id="probe-rtt" class="font-mono">—</dd>
+      <dt class="text-zinc-500">Reconnects</dt>
+      <dd id="probe-reconnects" class="font-mono">0</dd>
+      <dt class="text-zinc-500">Node uptime</dt>
+      <dd id="probe-uptime" class="font-mono">—</dd>
+      <dt class="text-zinc-500">Persistence</dt>
+      <dd id="probe-durability" class="font-mono">—</dd>
+    </dl>
+
+    <form id="probe-form" class="mt-6 flex gap-2">
+      <input
+        id="probe-input"
+        type="text"
+        name="body"
+        placeholder="Say something"
+        autocomplete="off"
+        required
+        maxlength="2000"
+        class="flex-1 rounded-md border border-zinc-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-500"
+      />
+      <button
+        type="submit"
+        class="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700"
+      >
+        Send
+      </button>
+    </form>
+
+    <ul id="probe-messages" class="mt-6 divide-y divide-zinc-200 border-t border-zinc-200 text-sm">
+    </ul>
+  </div>
+
+  <p class="mt-8 text-sm text-zinc-500">
+    Open <a href="/chat" class="underline">/chat</a> in another tab: messages sent here
+    must appear there, which proves PubSub fan-out between the two sockets.
+  </p>
+</div>

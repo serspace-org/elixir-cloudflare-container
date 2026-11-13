@@ -36,7 +36,9 @@ defmodule AppWeb.TaskLive do
     {:noreply, assign(socket, editing_task_id: nil)}
   end
 
-  def handle_event("update", %{"id" => id, "title" => title}, socket) do
+  # Named "_id" rather than "id" so the hidden input does not override the
+  # form element's DOM id (LiveView warns about that).
+  def handle_event("update", %{"_id" => id, "title" => title}, socket) do
     case find_task(socket, id) do
       nil ->
         {:noreply, assign(socket, editing_task_id: nil)}

@@ -28,11 +28,14 @@ defmodule AppWeb.ConnCase do
       import Plug.Conn
       import Phoenix.ConnTest
       import AppWeb.ConnCase
+      import App.D1Stub
     end
   end
 
   setup tags do
     App.DataCase.setup_sandbox(tags)
+    # Shared mode so LiveView processes can see the test's D1 stub.
+    Req.Test.set_req_test_from_context(tags)
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
 end

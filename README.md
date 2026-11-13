@@ -22,11 +22,13 @@ Database access goes through a private gateway inside the Worker: Phoenix makes 
 
 - **`app/`** — Phoenix 1.8.5 app (LiveView, Ecto, Bandit, Swoosh, Tailwind, esbuild)
   - `App.Tasks` — CRUD context over D1 (`/tasks` LiveView)
+  - `App.Chat` — chat context over D1, broadcast with `Phoenix.PubSub` (`/chat` LiveView, `/probe` raw channel client)
   - `App.D1` — HTTP client for the Worker's private D1 gateway
 - **`src/index.ts`** — Worker + Durable Object: container lifecycle, HTTP/WebSocket proxying, and the `D1Gateway` entrypoint
 - **`cloudflare/migrations/`** — SQL migrations applied to D1 with Wrangler
 - **`Dockerfile`** — Multi-stage build: compiles an Elixir release with assets, copies into minimal Alpine runtime
 - **`wrangler.toml`** — Wrangler config (container, Durable Object, D1 binding)
+- **`scripts/ws-smoke.mjs`** — post-deploy WebSocket/channel smoke test (`pnpm ws:smoke <url>`)
 - **`.github/workflows/deploy.yml`** — CI workflow that deploys on push to `main`
 
 ## Prerequisites
@@ -108,6 +110,49 @@ Then open `/tasks` for the D1-backed CRUD demo.
 
 The first request may take 5–15 seconds (container cold start). Subsequent requests are instant while the container is warm.
 
+## Chat (WebSocket + Channels) demo
+
+Phoenix's two socket paths are verified separately, because they fail differently:
+
+| Route | Socket | What a failure tells you |
+| --- | --- | --- |
+| `/chat` | LiveView on `/live` | LiveView real-time updates |
+| `/probe` | raw `Phoenix.Channel` on `/socket`, **no long-poll fallback** | the WebSocket upgrade itself |
+
+The reason for two is that `assets/js/app.js` sets `longPollFallbackMs`, so a broken
+WebSocket upgrade makes LiveView quietly fall back to long-polling and *everything still
+looks fine*. `/socket` sets `longpoll: false`, and both pages print the transport actually
+in use, so a degraded connection is visible rather than invisible.
+
+### What to check
+
+```bash
+pnpm ws:smoke https://<your-host>   # scripted: handshake, join, broadcast round trip
+
+curl https://<your-host>/health/sockets
+# {"status":"ok","node":"...","node_uptime_ms":123456,"present":0,"d1_ready":true,...}
+```
+
+By hand, open `/chat` and `/probe` side by side:
+
+1. **Transport** on both pages must say `websocket`. `/chat` turns the card red and says so
+   explicitly if the LiveView socket degraded to long-polling.
+2. **Cross-socket fan-out** — a message sent in `/probe` must appear in `/chat` and vice
+   versa. That exercises `Phoenix.PubSub` between two different socket implementations.
+3. **Presence** — *Online now* must rise and fall as you open and close tabs.
+4. **Round trip** on `/probe` is the real latency through Worker → Durable Object →
+   container.
+5. **Node uptime** is the one to watch on a reconnect: if it *keeps climbing*, only the
+   socket reconnected; if it *resets to zero*, the container cold-started and you lost BEAM
+   state. Persisted history survives either way, which is the point of storing it in D1.
+6. **Idle survival** — leave a tab open and idle for more than 10 minutes (the Durable
+   Object's `INACTIVITY_TIMEOUT_MS`). Phoenix heartbeats every 30s, so the socket should
+   stay up and node uptime should keep climbing. If it does not, WebSocket traffic is not
+   counting as container activity and the timeout needs raising or a keepalive adding.
+
+Without a D1 binding — plain `mix phx.server`, for instance — chat still works but marks
+itself *ephemeral* and does not persist history, so the transport can be tested on its own.
+
 ## Notes
 
 - Container instance type is `basic` (1 GiB RAM)
@@ -115,5 +160,6 @@ The first request may take 5–15 seconds (container cold start). Subsequent req
 - Disk is **ephemeral** — durable state lives in D1
 - The Worker handles TLS; the container serves plain HTTP behind it
 - `force_ssl` uses `x-forwarded-proto` and excludes `/health`
-- WebSocket upgrades are forwarded transparently to the container for LiveView real-time updates
+- WebSocket upgrades are forwarded transparently to the container, for both LiveView and plain channels
+- Every request is routed to a single Durable Object (`getByName("singleton")`), so all sockets share one BEAM node and local `Phoenix.PubSub` is sufficient — sharding the DO would split chat and presence per instance
 - Asset pipeline: esbuild + tailwind are Elixir-managed (no Node.js needed in the Docker build)
