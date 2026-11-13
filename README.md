@@ -2,6 +2,8 @@
 
 A full Phoenix 1.8 LiveView application deployed as a Docker container on Cloudflare Containers, with a Cloudflare Worker + Durable Object as the proxy layer (including WebSocket support for LiveView).
 
+This repo is a work in progress.
+
 ## Architecture
 
 ```
