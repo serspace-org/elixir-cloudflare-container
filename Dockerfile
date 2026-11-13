@@ -40,7 +40,7 @@ RUN mix release --overwrite
 FROM alpine:3.24
 
 # Runtime dependencies: openssl/ncurses for BEAM, ca-certificates for TLS to external Postgres
-RUN apk add --no-cache openssl ncurses-libs ca-certificates tini
+RUN apk add --no-cache openssl ncurses-libs libstdc++ ca-certificates tini
 
 WORKDIR /app
 
