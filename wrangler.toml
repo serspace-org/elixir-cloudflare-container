@@ -34,7 +34,9 @@ storage = "sqlite"
 # Until the binding exists, /tasks shows a setup notice and nothing else changes.
 #
 [[d1_databases]]
-binding = "phoenix_cf_container_db"
+# The Worker (src/index.ts) reads this binding as `env.DB` and only registers
+# the private D1 gateway when it exists — keep the name "DB".
+binding = "DB"
 database_name = "phoenix-cf-container-db"
 database_id = "af1cbfce-87d4-4a3c-ab2d-60a49db70ece"
 migrations_dir = "cloudflare/migrations"
