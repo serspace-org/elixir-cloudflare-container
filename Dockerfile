@@ -47,6 +47,11 @@ WORKDIR /app
 # Copy the release from the build stage
 COPY --from=build /app/_build/prod/rel/app ./
 
+# Same QEMU workaround as the build stage: without it the BEAM's prim_tty NIF
+# fails to load under emulation (arm64 host running the linux/amd64 image) and
+# the VM dies with a "nouser" crash on boot. Harmless on native amd64.
+ENV ERL_FLAGS="+JMsingle true"
+
 ENV PHX_SERVER=true
 EXPOSE 4000
 
