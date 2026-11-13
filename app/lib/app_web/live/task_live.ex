@@ -115,7 +115,9 @@ defmodule AppWeb.TaskLive do
 
   defp replace_task(socket, updated) do
     update(socket, :tasks, fn tasks ->
-      Enum.map(tasks, &if(&1.id == updated.id, do: updated, else: &1))
+      Enum.map(tasks, fn task ->
+        if task.id == updated.id, do: updated, else: task
+      end)
     end)
   end
 

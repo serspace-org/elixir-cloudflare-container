@@ -9,7 +9,10 @@ defmodule App.Tasks.Task do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @primary_key {:id, :integer, autogenerate: true}
+  # Integer ids come from D1 (AUTOINCREMENT); Ecto only supports
+  # autogenerate: true for :binary_id primary keys, so we declare the
+  # primary key without it.
+  @primary_key {:id, :integer, []}
   embedded_schema do
     field :title, :string
     field :completed, :boolean, default: false
@@ -21,6 +24,7 @@ defmodule App.Tasks.Task do
   def changeset(task, attrs) do
     task
     |> cast(attrs, [:title, :completed])
+    |> update_change(:title, &String.trim/1)
     |> validate_required([:title])
     |> validate_length(:title, min: 1, max: 255)
   end
