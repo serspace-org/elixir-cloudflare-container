@@ -33,8 +33,7 @@ storage = "sqlite"
 #
 # Until the binding exists, /tasks shows a setup notice and nothing else changes.
 #
-# [[d1_databases]]
-# binding = "DB"
-# database_name = "phoenix-cf-container-db"
-# database_id = "<paste-database-id-here>"
-# migrations_dir = "cloudflare/migrations"
+[[d1_databases]]
+binding = "phoenix_cf_container_db"
+database_name = "phoenix-cf-container-db"
+database_id = "af1cbfce-87d4-4a3c-ab2d-60a49db70ece"
