@@ -1,5 +1,10 @@
 # ---- Build Stage ----
-FROM elixir:1.17.2-alpine AS build
+FROM elixir:1.20.5-alpine AS build
+
+# Work around a QEMU bug that crashes the BEAM when wrangler cross-builds the
+# linux/amd64 image on an arm64 host (kernel "nouser" crash in mix/erl).
+# Build-time only — the deployed container runs on native amd64.
+ENV ERL_FLAGS="+JMsingle true"
 
 # Install build dependencies (git needed for heroicons GitHub dep)
 RUN apk add --no-cache build-base git
@@ -32,7 +37,7 @@ RUN mix assets.deploy
 RUN mix release --overwrite
 
 # ---- Runtime Stage ----
-FROM alpine:3.20
+FROM alpine:3.24
 
 # Runtime dependencies: openssl/ncurses for BEAM, ca-certificates for TLS to external Postgres
 RUN apk add --no-cache openssl ncurses-libs ca-certificates tini
