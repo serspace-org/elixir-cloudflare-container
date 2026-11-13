@@ -6,7 +6,7 @@ const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes (allows WebSocket ke
 export interface Env {
   ELIXIR_CONTAINER: DurableObjectNamespace;
   SECRET_KEY_BASE: string;
-  DATABASE_URL: string;
+  DATABASE_URL?: string;
   PHX_HOST: string;
 }
 
@@ -55,13 +55,16 @@ export class ElixirContainer extends DurableObject<Env> {
   }
 
   private getContainerEnv(): Record<string, string> {
-    return {
+    const env: Record<string, string> = {
       PHX_SERVER: "true",
       SECRET_KEY_BASE: this.env.SECRET_KEY_BASE,
-      DATABASE_URL: this.env.DATABASE_URL,
       PHX_HOST: this.env.PHX_HOST,
       PORT: String(PORT),
     };
+    if (this.env.DATABASE_URL) {
+      env.DATABASE_URL = this.env.DATABASE_URL;
+    }
+    return env;
   }
 
   private async startAndWait(): Promise<void> {
