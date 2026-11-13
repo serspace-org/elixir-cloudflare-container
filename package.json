@@ -1,5 +1,5 @@
 {
-  "name": "elixir-cf-poc",
+  "name": "phoenix-cf-container",
   "version": "0.1.0",
   "private": true,
   "scripts": {
