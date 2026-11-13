@@ -18,6 +18,7 @@ defmodule AppWeb.Router do
     pipe_through :browser
 
     get "/", PageController, :home
+    live "/tasks", TaskLive, :index
   end
 
   # Health check endpoint (used by the Worker for readiness checks)

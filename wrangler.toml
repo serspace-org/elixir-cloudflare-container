@@ -1,6 +1,9 @@
 name = "phoenix-cf-container"
 main = "src/index.ts"
 compatibility_date = "2025-01-01"
+# Required for ctx.exports, used to construct the D1Gateway entrypoint that the
+# Durable Object hands to container.interceptOutboundHttp(). See src/index.ts.
+compatibility_flags = ["enable_ctx_exports"]
 
 [observability]
 enabled = true
@@ -19,3 +22,19 @@ class_name = "ElixirContainer"
 [exports.ElixirContainer]
 type = "durable-object"
 storage = "sqlite"
+
+# Cloudflare D1 database (used by the /tasks demo).
+#
+# Setup:
+#   1. pnpm exec wrangler d1 create phoenix-cf-container-db
+#   2. Uncomment this block and paste the database_id printed above.
+#   3. pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --remote
+#   4. Redeploy the Worker (CI on push to main, or wrangler deploy).
+#
+# Until the binding exists, /tasks shows a setup notice and nothing else changes.
+#
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "phoenix-cf-container-db"
+# database_id = "<paste-database-id-here>"
+# migrations_dir = "cloudflare/migrations"

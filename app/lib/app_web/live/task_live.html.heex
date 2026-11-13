@@ -1,0 +1,88 @@
+<div class="mx-auto max-w-2xl px-4 py-10">
+  <h1 class="text-2xl font-bold tracking-tight">Tasks</h1>
+  <p class="mt-1 text-sm text-zinc-500">CRUD demo persisted in Cloudflare D1.</p>
+
+  <%= unless @d1_ready do %>
+    <div class="mt-8 rounded-lg border border-yellow-300 bg-yellow-50 p-4 text-sm text-yellow-800">
+      <p class="font-semibold">D1 is not configured or unreachable from the container.</p>
+      <p class="mt-2">
+        Create a database, add the <code>[[d1_databases]]</code> binding in
+        <code>wrangler.toml</code>, apply the migration, and redeploy. See
+        <em>Database (Cloudflare D1)</em> in the README.
+      </p>
+    </div>
+  <% else %>
+    <form phx-submit="create" class="mt-8 flex gap-2">
+      <input
+        type="text"
+        name="title"
+        placeholder="What needs doing?"
+        required
+        maxlength="255"
+        class="flex-1 rounded-md border border-zinc-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-500"
+      />
+      <button
+        type="submit"
+        class="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700"
+      >
+        Add
+      </button>
+    </form>
+
+    <%= if @tasks == [] do %>
+      <p class="mt-8 text-sm text-zinc-500">Nothing here yet — add your first task above.</p>
+    <% else %>
+      <ul class="mt-8 divide-y divide-zinc-200 border-t border-zinc-200">
+        <li :for={task <- @tasks} id={"task-#{task.id}"} class="flex items-center gap-3 py-3">
+          <%= if @editing_task_id == task.id do %>
+            <form phx-submit="update" class="flex flex-1 items-center gap-2">
+              <input type="hidden" name="id" value={task.id} />
+              <input
+                type="text"
+                name="title"
+                value={task.title}
+                required
+                maxlength="255"
+                class="flex-1 rounded-md border border-zinc-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-500"
+              />
+              <button type="submit" class="text-sm font-medium text-zinc-900 underline">
+                Save
+              </button>
+            </form>
+            <button phx-click="cancel" class="text-sm text-zinc-500 underline">Cancel</button>
+          <% else %>
+            <input
+              type="checkbox"
+              checked={task.completed}
+              phx-click="toggle"
+              phx-value-id={task.id}
+              class="h-4 w-4"
+            />
+            <span
+              class={if task.completed, do: "flex-1 text-sm text-zinc-400 line-through", else: "flex-1 text-sm"}
+            >
+              <%= task.title %>
+            </span>
+            <span class="flex items-center gap-3">
+              <button
+                phx-click="edit"
+                phx-value-id={task.id}
+                class="text-sm text-zinc-600 underline hover:text-zinc-900"
+              >
+                Edit
+              </button>
+              <button
+                phx-click="delete"
+                phx-value-id={task.id}
+                data-confirm="Delete this task?"
+                class="text-sm text-red-600 underline hover:text-red-800"
+              >
+                Delete
+              </button>
+            </span>
+          <% end %>
+        </li>
+      </ul>
+    <% end %>
+  <% end %>
+</div>
