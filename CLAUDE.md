@@ -65,7 +65,7 @@ pnpm ws:smoke https://<host>                                            # WebSoc
 
 **Deploy from CI, not locally, on Apple Silicon.** `wrangler deploy` cross-builds the `linux/amd64` image under QEMU and the BEAM crashes during dependency compilation. Pushing to `main` runs `.github/workflows/deploy.yml` on native AMD64 `ubuntu-latest`. The `ERL_FLAGS="+JMsingle true"` lines in both Dockerfile stages are a workaround for this same QEMU bug — don't remove them.
 
-Apply D1 migrations **before** deploying code that depends on them, and keep them additive while the previous version is still serving traffic.
+D1 migrations are applied by CI **before** `wrangler deploy` (`.github/workflows/deploy.yml`), using the `DB` binding so no database name is duplicated there. Code therefore cannot ship ahead of its schema, and a failed migration blocks the deploy. Keep migrations additive anyway — the previous version keeps serving traffic while the new one rolls out. Applying by hand is only for getting schema live ahead of a deploy; the command is idempotent.
 
 ## Gotchas
 

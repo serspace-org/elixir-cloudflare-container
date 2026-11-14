@@ -16,6 +16,21 @@ jobs:
 
       - run: npm install
 
+      # Schema first, always. Deploying code ahead of its schema takes the app
+      # down in a way nothing here would catch: the Worker's D1Gateway 500s on
+      # the missing table and the app reports it as an unreachable database.
+      #
+      # "DB" is the binding from wrangler.toml, so there is no database name to
+      # keep in sync here. The command is idempotent — it prints "No migrations
+      # to apply!" and exits 0 when D1 is already current — and non-interactive
+      # runs skip the confirmation prompt. The API token needs D1 edit
+      # permission in addition to Workers and Containers.
+      - name: Apply D1 migrations
+        run: npx wrangler d1 migrations apply DB --remote
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
       - name: Deploy to Cloudflare
         run: npx wrangler deploy
         env:

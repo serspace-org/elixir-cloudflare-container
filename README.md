@@ -88,7 +88,7 @@ Until the binding is configured, the Worker skips the gateway entirely: `/tasks`
 
 In your GitHub repo settings, add:
 
-- `CLOUDFLARE_API_TOKEN` — a Cloudflare API token with Workers and Containers permissions
+- `CLOUDFLARE_API_TOKEN` — a Cloudflare API token with Workers, Containers and D1 edit permissions (D1 because CI applies migrations before deploying)
 - `CLOUDFLARE_ACCOUNT_ID` — your Cloudflare account ID
 
 Optionally add a repo **variable** `SMOKE_URL` (the deployed hostname) to run the WebSocket smoke test after each deploy. Without it, that CI step is skipped.
@@ -145,7 +145,9 @@ D1 calls are stubbed with `Req.Test` through `App.D1Stub`, so the suite never re
 
 ### Via CI (recommended)
 
-Push to the `main` branch. GitHub Actions builds the Docker image on native AMD64 (`ubuntu-latest`), pushes it to Cloudflare's registry, and deploys the Worker. The first deploy takes 5–10 minutes for the image build. If the `SMOKE_URL` repo variable is set, the WebSocket smoke test runs against the deployment afterwards and fails the build if the socket is broken.
+Push to the `main` branch. GitHub Actions applies any pending D1 migrations, then builds the Docker image on native AMD64 (`ubuntu-latest`), pushes it to Cloudflare's registry, and deploys the Worker. The first deploy takes 5–10 minutes for the image build. If the `SMOKE_URL` repo variable is set, the WebSocket smoke test runs against the deployment afterwards and fails the build if the socket is broken.
+
+Migrations run **before** the deploy on purpose, so code can never ship ahead of its schema. If a migration fails, the deploy never happens. This means `CLOUDFLARE_API_TOKEN` needs D1 edit permission alongside Workers and Containers.
 
 ### Locally
 
@@ -165,7 +167,9 @@ pnpm exec wrangler d1 migrations create phoenix-cf-container-db <name>
 pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --remote
 ```
 
-**Apply a migration before deploying code that depends on it**, and keep migrations additive (new tables/columns) while the previous version is still serving traffic. Wrangler records applied migrations in D1's `d1_migrations` table.
+CI applies pending migrations before each deploy (see `.github/workflows/deploy.yml`), so pushing a migration and the code that needs it in the same commit is safe. Run the `--remote` command by hand only when you need the schema live ahead of a deploy. Wrangler records applied migrations in D1's `d1_migrations` table and the command is idempotent, so re-running it is harmless.
+
+**Keep migrations additive** (new tables and columns) while the previous version is still serving traffic: the old code keeps running for the length of the deploy, and the new schema has to be compatible with it. This is the same constraint any migrate-then-deploy pipeline has.
 
 A new table or endpoint touches four places, which have to stay in step: the migration, a route in `D1Gateway` (`src/index.ts`), a client function in `app/lib/app/d1.ex`, and the same route in `App.D1.LocalGateway.Router`. The `tasks` and `messages` tables are both wired this way — copy either. Keep all SQL parameterized (`?1`-style binds).
 
