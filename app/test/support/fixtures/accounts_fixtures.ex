@@ -98,6 +98,37 @@ defmodule App.AccountsFixtures do
   end
 
   @doc """
+  Reproduces production's mailer configuration for one test: no provider.
+
+  Exactly the combination `config/config.exs` and `config/prod.exs` produce —
+  the Local adapter with Swoosh's storage process disabled — which is what
+  made delivery exit with `:noproc` rather than quietly do nothing. Restored
+  on exit.
+
+  Create any fixtures *before* calling this: `user_fixture/1` needs a working
+  mailer to read the magic link back out.
+  """
+  def without_mailer! do
+    mailer = Application.get_env(:app, App.Mailer)
+    local = Application.get_env(:swoosh, :local)
+
+    Application.put_env(:app, App.Mailer, adapter: Swoosh.Adapters.Local)
+    Application.put_env(:swoosh, :local, false)
+
+    ExUnit.Callbacks.on_exit(fn ->
+      Application.put_env(:app, App.Mailer, mailer)
+
+      if is_nil(local) do
+        Application.delete_env(:swoosh, :local)
+      else
+        Application.put_env(:swoosh, :local, local)
+      end
+    end)
+
+    :ok
+  end
+
+  @doc """
   Reads a user row straight from the test database.
 
   Rows, not structs: the point of reading back here is to see what was

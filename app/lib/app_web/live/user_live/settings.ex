@@ -16,7 +16,21 @@ defmodule AppWeb.UserLive.Settings do
         </.header>
       </div>
 
-      <.form for={@email_form} id="email_form" phx-submit="update_email" phx-change="validate_email">
+      <div :if={!@email_available?} class="alert alert-info" id="email_change_unavailable">
+        <.icon name="hero-information-circle" class="size-6 shrink-0" />
+        <div>
+          <p>Changing your email address isn't available yet.</p>
+          <p>It needs a confirmation email, and no mail provider is configured.</p>
+        </div>
+      </div>
+
+      <.form
+        :if={@email_available?}
+        for={@email_form}
+        id="email_form"
+        phx-submit="update_email"
+        phx-change="validate_email"
+      >
         <.input
           field={@email_form[:email]}
           type="email"
@@ -28,7 +42,7 @@ defmodule AppWeb.UserLive.Settings do
         <.button variant="primary" phx-disable-with="Changing...">Change Email</.button>
       </.form>
 
-      <div class="divider" />
+      <div :if={@email_available?} class="divider" />
 
       <.form
         for={@password_form}
@@ -94,6 +108,7 @@ defmodule AppWeb.UserLive.Settings do
       |> assign(:email_form, to_form(email_changeset))
       |> assign(:password_form, to_form(password_changeset))
       |> assign(:trigger_submit, false)
+      |> assign(:email_available?, Accounts.email_delivery_available?())
 
     {:ok, socket}
   end
@@ -118,14 +133,21 @@ defmodule AppWeb.UserLive.Settings do
 
     case Accounts.change_user_email(user, user_params) do
       %{valid?: true} = changeset ->
-        Accounts.deliver_user_update_email_instructions(
-          Ecto.Changeset.apply_action!(changeset, :insert),
+        changeset
+        |> Ecto.Changeset.apply_action!(:insert)
+        |> Accounts.deliver_user_update_email_instructions(
           user.email,
           &url(~p"/users/settings/confirm-email/#{&1}")
         )
+        |> case do
+          {:error, :mailer_not_configured} ->
+            {:noreply,
+             put_flash(socket, :error, "Changing your email address isn't available yet.")}
 
-        info = "A link to confirm your email change has been sent to the new address."
-        {:noreply, socket |> put_flash(:info, info)}
+          _delivered ->
+            info = "A link to confirm your email change has been sent to the new address."
+            {:noreply, put_flash(socket, :info, info)}
+        end
 
       changeset ->
         {:noreply, assign(socket, :email_form, to_form(changeset, action: :insert))}

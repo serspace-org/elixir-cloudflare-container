@@ -7,6 +7,10 @@ const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes (allows WebSocket ke
 // Resolves only inside the container, via the outbound HTTP intercept.
 const D1_HOSTNAME = "d1.internal";
 
+// Durable Object storage key holding the image of the container this instance
+// last started. See rollStaleContainer().
+const CONTAINER_IMAGE_KEY = "container:image";
+
 export interface Env {
   ELIXIR_CONTAINER: DurableObjectNamespace;
   SECRET_KEY_BASE: string;
@@ -592,8 +596,50 @@ export class ElixirContainer extends DurableObject<Env> {
     return env;
   }
 
+  /**
+   * Stops the running container when it is not the image this Worker version
+   * ships, so the next start picks the new one up.
+   *
+   * A deploy publishes Worker code instantly but leaves the *container*
+   * untouched, and `startAndWait()` skips `start()` whenever one is already
+   * running. The container only goes away on the inactivity timeout — which
+   * every request pushes another 10 minutes into the future (see the
+   * `setInactivityTimeout` call below). On a site with steady traffic, new
+   * code could therefore never reach users, and nothing would look wrong:
+   * the deploy succeeds, the old image keeps answering, and routes added in
+   * that deploy 404. That is exactly what happened when authentication
+   * shipped.
+   *
+   * The comparison is against the image this DO last *started*, recorded in
+   * its storage, rather than against `inspect()`'s view of the running one.
+   * Both would normally agree, but an unrecorded container (the state every
+   * instance is in the first time this code runs) has to count as stale, and
+   * a formatting difference between the two strings must not be able to turn
+   * this into a restart loop. Recording what we started can only mismatch
+   * once per deploy.
+   *
+   * In-flight WebSockets are dropped when this fires. That is inherent to
+   * replacing the container: LiveView reconnects on its own, and a deploy is
+   * the one moment it is worth it.
+   */
+  private async rollStaleContainer(container: Container): Promise<void> {
+    if (!container.running) return;
+
+    const image = container.images.base;
+    const started = await this.ctx.storage.get<string>(CONTAINER_IMAGE_KEY);
+    if (started === image) return;
+
+    console.log(
+      `Container image changed (running ${started ?? "unrecorded"}, ` +
+        `deployed ${image}) — restarting to pick up the new image`,
+    );
+    await container.destroy();
+  }
+
   private async startAndWait(): Promise<void> {
     const container = this.ctx.container!;
+    await this.rollStaleContainer(container);
+
     if (!container.running) {
       if (this.env.DB) {
         // Private D1 gateway for the container (see D1Gateway above).
@@ -609,6 +655,9 @@ export class ElixirContainer extends DurableObject<Env> {
         enableInternet: true,
         env: this.getContainerEnv(),
       });
+      // Written only after a successful start, so a start that throws leaves
+      // the container stale and the next request tries again.
+      await this.ctx.storage.put(CONTAINER_IMAGE_KEY, container.images.base);
     }
     this.observeExit();
     await container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS);

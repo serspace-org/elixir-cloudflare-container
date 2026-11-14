@@ -162,6 +162,23 @@ defmodule AppWeb.UserLive.SettingsTest do
     end
   end
 
+  describe "settings page with no mailer configured" do
+    setup %{conn: conn} do
+      user = user_fixture()
+      without_mailer!()
+      %{conn: log_in_user(conn, user), user: user}
+    end
+
+    test "offers only the password form", %{conn: conn} do
+      {:ok, lv, _html} = live(conn, ~p"/users/settings")
+
+      # Submitting the email form used to take the LiveView down.
+      refute has_element?(lv, "#email_form")
+      assert has_element?(lv, "#password_form")
+      assert has_element?(lv, "#email_change_unavailable")
+    end
+  end
+
   describe "confirm email" do
     setup %{conn: conn} do
       user = user_fixture()

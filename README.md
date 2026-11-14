@@ -154,6 +154,12 @@ Push to the `main` branch. GitHub Actions applies any pending D1 migrations, the
 
 Migrations run **before** the deploy on purpose, so code can never ship ahead of its schema. If a migration fails, the deploy never happens. This means `CLOUDFLARE_API_TOKEN` needs D1 edit permission alongside Workers and Containers.
 
+### How a deploy actually reaches users
+
+Worker code goes live the moment `wrangler deploy` finishes, but the **container does not**: the Durable Object skips `start()` whenever one is already running, and the only thing that stops it is the inactivity timeout — which every single request pushes another 10 minutes out. Left alone, a deploy on a site with steady traffic may never take effect, and nothing looks wrong: the deploy is green, the old image keeps answering, and routes added in that deploy return 404.
+
+So the DO records the image it started in its own storage and compares it on each request (`rollStaleContainer` in `src/index.ts`). When a deploy changes the image, the first request afterwards stops the old container so the next start picks up the new one. The cost is one cold start (5–15s) on that request, and in-flight WebSockets are dropped — LiveView reconnects on its own, and a deploy is the one moment that is worth it.
+
 ### Locally
 
 ```bash
@@ -204,7 +210,9 @@ Accounts therefore stay **unconfirmed** until a mailer exists; nothing in the ap
 
 ### Mailer (not wired yet)
 
-`App.Accounts.UserNotifier` is the generated Swoosh notifier and works in dev — `mix phx.server` then `/dev/mailbox`. In production no adapter is configured, so magic links, email-change confirmations and (once written) password resets go nowhere.
+`App.Accounts.UserNotifier` is the generated Swoosh notifier and works in dev — `mix phx.server` then `/dev/mailbox`. In production there is no provider, and the generated code assumed one: the configured adapter is `Swoosh.Adapters.Local`, while `config/prod.exs` sets `config :swoosh, local: false`, which stops Swoosh from starting the Local adapter's storage process. Delivering then exits with `:noproc` — a 500, not a silent no-op.
+
+`UserNotifier.delivery_configured?/0` therefore gates every send, surfaced as `App.Accounts.email_delivery_available?/0`. While it is false, the two flows that need email say so instead of failing: `/users/log-in` offers only the password form, and `/users/settings` only the password section. No magic-link token is written either — an unusable link should not exist in the database. Configure an adapter and both open up on their own, no code change.
 
 Cloudflare's own Email Service is the natural fit, and it needs no custom Swoosh adapter — it speaks SMTP submission:
 
