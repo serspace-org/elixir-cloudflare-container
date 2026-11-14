@@ -343,10 +343,14 @@ defmodule App.Accounts do
   """
   def deliver_user_update_email_instructions(%User{} = user, current_email, update_email_url_fun)
       when is_function(update_email_url_fun, 1) do
-    {encoded_token, user_token} = UserToken.build_email_token(user, "change:#{current_email}")
+    if email_delivery_available?() do
+      {encoded_token, user_token} = UserToken.build_email_token(user, "change:#{current_email}")
 
-    {:ok, _row} = insert_email_token(user_token)
-    UserNotifier.deliver_update_email_instructions(user, update_email_url_fun.(encoded_token))
+      {:ok, _row} = insert_email_token(user_token)
+      UserNotifier.deliver_update_email_instructions(user, update_email_url_fun.(encoded_token))
+    else
+      {:error, :mailer_not_configured}
+    end
   end
 
   @doc """
@@ -354,11 +358,28 @@ defmodule App.Accounts do
   """
   def deliver_login_instructions(%User{} = user, magic_link_url_fun)
       when is_function(magic_link_url_fun, 1) do
-    {encoded_token, user_token} = UserToken.build_email_token(user, "login")
+    if email_delivery_available?() do
+      {encoded_token, user_token} = UserToken.build_email_token(user, "login")
 
-    {:ok, _row} = insert_email_token(user_token)
-    UserNotifier.deliver_login_instructions(user, magic_link_url_fun.(encoded_token))
+      {:ok, _row} = insert_email_token(user_token)
+      UserNotifier.deliver_login_instructions(user, magic_link_url_fun.(encoded_token))
+    else
+      {:error, :mailer_not_configured}
+    end
   end
+
+  @doc """
+  True when account emails can actually be delivered.
+
+  Guards the two flows that depend on email — magic link login and changing
+  an email address — so they neither crash nor claim to have sent something.
+  False in production until a mail provider is configured; see the README.
+
+  The token is deliberately not created when this is false: an unusable magic
+  link should not exist in the database at all.
+  """
+  @spec email_delivery_available?() :: boolean()
+  def email_delivery_available?, do: UserNotifier.delivery_configured?()
 
   @doc """
   Deletes the signed token with the given context.

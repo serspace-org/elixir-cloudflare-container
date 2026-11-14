@@ -452,6 +452,39 @@ defmodule App.AccountsTest do
     end
   end
 
+  describe "email delivery guard" do
+    test "reports delivery unavailable with no mailer configured" do
+      assert Accounts.email_delivery_available?()
+      without_mailer!()
+      refute Accounts.email_delivery_available?()
+    end
+
+    test "deliver_login_instructions/2 does not crash and mints no token" do
+      user = user_fixture()
+      without_mailer!()
+
+      # Before the guard this exited with :noproc, taking the LiveView with it.
+      assert Accounts.deliver_login_instructions(user, &"http://localhost/#{&1}") ==
+               {:error, :mailer_not_configured}
+
+      # An unusable magic link should not exist in the database at all.
+      assert user_token_rows(user.id) == []
+    end
+
+    test "deliver_user_update_email_instructions/3 does not crash and mints no token" do
+      user = user_fixture()
+      without_mailer!()
+
+      assert Accounts.deliver_user_update_email_instructions(
+               user,
+               user.email,
+               &"http://localhost/#{&1}"
+             ) == {:error, :mailer_not_configured}
+
+      assert user_token_rows(user.id) == []
+    end
+  end
+
   describe "inspect/2 for the User module" do
     test "does not include password" do
       refute inspect(%User{password: "123456"}) =~ "password: \"123456\""

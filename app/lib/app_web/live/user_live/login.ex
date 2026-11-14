@@ -35,8 +35,17 @@ defmodule AppWeb.UserLive.Login do
           </div>
         </div>
 
+        <div :if={!@email_available?} class="alert alert-info" id="email_unavailable">
+          <.icon name="hero-information-circle" class="size-6 shrink-0" />
+          <div>
+            <p>Logging in by email link isn't available yet.</p>
+            <p>Use your password below — that is how accounts are registered.</p>
+          </div>
+        </div>
+
         <.form
           :let={f}
+          :if={@email_available?}
           for={@form}
           id="login_form_magic"
           action={~p"/users/log-in"}
@@ -57,7 +66,7 @@ defmodule AppWeb.UserLive.Login do
           </.button>
         </.form>
 
-        <div class="divider">or</div>
+        <div :if={@email_available?} class="divider">or</div>
 
         <.form
           :let={f}
@@ -103,7 +112,14 @@ defmodule AppWeb.UserLive.Login do
 
     form = to_form(%{"email" => email}, as: "user")
 
-    {:ok, assign(socket, form: form, trigger_submit: false)}
+    socket =
+      assign(socket,
+        form: form,
+        trigger_submit: false,
+        email_available?: Accounts.email_delivery_available?()
+      )
+
+    {:ok, socket}
   end
 
   @impl true
@@ -112,20 +128,31 @@ defmodule AppWeb.UserLive.Login do
   end
 
   def handle_event("submit_magic", %{"user" => %{"email" => email}}, socket) do
-    if user = Accounts.get_user_by_email(email) do
-      Accounts.deliver_login_instructions(
-        user,
-        &url(~p"/users/log-in/#{&1}")
-      )
+    if Accounts.email_delivery_available?() do
+      if user = Accounts.get_user_by_email(email) do
+        Accounts.deliver_login_instructions(
+          user,
+          &url(~p"/users/log-in/#{&1}")
+        )
+      end
+
+      # Deliberately the same answer either way, so the form cannot be used to
+      # discover which addresses are registered.
+      info =
+        "If your email is in our system, you will receive instructions for logging in shortly."
+
+      {:noreply,
+       socket
+       |> put_flash(:info, info)
+       |> push_navigate(to: ~p"/users/log-in")}
+    else
+      {:noreply,
+       put_flash(
+         socket,
+         :error,
+         "Logging in by email link isn't available yet. Use your password instead."
+       )}
     end
-
-    info =
-      "If your email is in our system, you will receive instructions for logging in shortly."
-
-    {:noreply,
-     socket
-     |> put_flash(:info, info)
-     |> push_navigate(to: ~p"/users/log-in")}
   end
 
   defp local_mail_adapter? do

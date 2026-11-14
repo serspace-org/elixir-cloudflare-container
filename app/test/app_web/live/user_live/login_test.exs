@@ -76,6 +76,33 @@ defmodule AppWeb.UserLive.LoginTest do
     end
   end
 
+  describe "login page with no mailer configured" do
+    test "offers only the password form", %{conn: conn} do
+      without_mailer!()
+
+      {:ok, lv, html} = live(conn, ~p"/users/log-in")
+
+      # Clicking the magic-link button used to take the LiveView down with a
+      # :noproc exit, so the button is not offered at all.
+      refute has_element?(lv, "#login_form_magic")
+      assert has_element?(lv, "#login_form_password")
+      assert has_element?(lv, "#email_unavailable")
+      assert html =~ "Use your password below"
+    end
+
+    test "refuses a magic link request that reaches the server anyway", %{conn: conn} do
+      user = user_fixture()
+      without_mailer!()
+
+      {:ok, lv, _html} = live(conn, ~p"/users/log-in")
+
+      assert render_hook(lv, "submit_magic", %{"user" => %{"email" => user.email}}) =~
+               "isn&#39;t available yet"
+
+      assert user_token_rows(user.id) == []
+    end
+  end
+
   describe "login navigation" do
     test "redirects to registration page when the Register button is clicked", %{conn: conn} do
       {:ok, lv, _html} = live(conn, ~p"/users/log-in")
