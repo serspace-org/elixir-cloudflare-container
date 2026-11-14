@@ -1,10 +1,67 @@
 <div class="mx-auto max-w-2xl px-4 py-10">
-  <h1 class="text-2xl font-bold tracking-tight">Chat</h1>
+  <h1 class="text-2xl font-bold tracking-tight">
+    Chat <span class="font-mono text-base font-normal text-zinc-500">{@room}</span>
+  </h1>
   <p class="mt-1 text-sm text-zinc-500">
     LiveView over the <code>/live</code>
     WebSocket, fanned out with <code>Phoenix.PubSub</code>
     and persisted in Cloudflare D1.
   </p>
+
+  <div class="mt-6 rounded-lg border border-zinc-200 p-4">
+    <div class="flex flex-wrap items-center gap-2">
+      <label for="share-url" class="text-sm text-zinc-500">Share this session</label>
+      <button
+        id="new-session"
+        phx-click="new_session"
+        class="ml-auto rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-50"
+      >
+        New session
+      </button>
+    </div>
+    <div class="mt-2 flex gap-2">
+      <input
+        id="share-url"
+        type="text"
+        readonly
+        value={@share_url}
+        class="flex-1 rounded-md border border-zinc-300 bg-zinc-50 px-3 py-2 font-mono text-xs"
+      />
+      <button
+        id="copy-share-url"
+        type="button"
+        phx-hook=".CopyLink"
+        data-url={@share_url}
+        class="rounded-md border border-zinc-300 px-3 py-2 text-sm font-medium hover:bg-zinc-50"
+      >
+        Copy
+      </button>
+    </div>
+    <p class="mt-2 text-xs text-zinc-500">
+      Anyone opening that link joins this room. The raw channel client for the same room is at <a
+        href={@probe_url}
+        class="underline"
+      >{@probe_url}</a>.
+    </p>
+
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".CopyLink">
+      export default {
+        mounted() {
+          this.el.addEventListener("click", async () => {
+            const label = this.el.textContent
+            try {
+              await navigator.clipboard.writeText(this.el.dataset.url)
+              this.el.textContent = "Copied"
+            } catch (_error) {
+              // Clipboard needs a secure context; the input is selectable anyway.
+              this.el.textContent = "Select it"
+            }
+            setTimeout(() => { this.el.textContent = label }, 1500)
+          })
+        }
+      }
+    </script>
+  </div>
 
   <div
     id="transport-info"
@@ -40,7 +97,22 @@
 
   <p :if={@error} id="chat-error" class="mt-4 text-sm text-red-700">{@error}</p>
 
-  <form id="chat-form" phx-submit="send" class="mt-6 flex gap-2">
+  <form id="rename-form" phx-submit="rename" class="mt-6 flex gap-2">
+    <input
+      id="rename-input"
+      type="text"
+      name="nickname"
+      value={@nickname}
+      maxlength="64"
+      aria-label="Your name"
+      class="w-48 rounded-md border border-zinc-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-500"
+    />
+    <button type="submit" class="text-sm text-zinc-600 underline hover:text-zinc-900">
+      Rename
+    </button>
+  </form>
+
+  <form id="chat-form" phx-submit="send" class="mt-3 flex gap-2">
     <input
       id="chat-input"
       type="text"
@@ -71,8 +143,7 @@
   </div>
 
   <p :if={@message_count == 0} class="mt-6 text-sm text-zinc-500">
-    No messages yet — send one, then open <a href="/probe" class="underline">/probe</a>
-    in another tab and watch it arrive over the
-    raw channel socket.
+    No messages yet — send one, then open the share link in another tab and watch it arrive
+    over the other socket.
   </p>
 </div>

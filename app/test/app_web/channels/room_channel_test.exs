@@ -3,7 +3,7 @@ defmodule AppWeb.RoomChannelTest do
 
   alias App.Chat
 
-  defp join(params \\ %{"nickname" => "tester"}, topic \\ "room:lobby") do
+  defp join_room(params \\ %{"nickname" => "tester"}, topic \\ "room:lobby") do
     {:ok, socket} = connect(AppWeb.UserSocket, params)
     subscribe_and_join(socket, topic, %{})
   end
@@ -12,7 +12,7 @@ defmodule AppWeb.RoomChannelTest do
     test "replies with the nickname, room and server info" do
       stub_d1_messages()
 
-      assert {:ok, reply, _socket} = join()
+      assert {:ok, reply, _socket} = join_room()
       assert reply.nickname == "tester"
       assert reply.room == "lobby"
       assert reply.d1_ready
@@ -26,28 +26,41 @@ defmodule AppWeb.RoomChannelTest do
         %{"id" => 2, "room" => "lobby", "nickname" => "grace", "body" => "second"}
       ])
 
-      assert {:ok, reply, _socket} = join()
+      assert {:ok, reply, _socket} = join_room()
       assert Enum.map(reply.messages, & &1.body) == ["first", "second"]
     end
 
     test "assigns a nickname when the client sends none" do
       stub_d1_messages()
 
-      assert {:ok, reply, _socket} = join(%{})
+      assert {:ok, reply, _socket} = join_room(%{})
       assert reply.nickname =~ ~r/^guest-[0-9a-f]{6}$/
     end
 
-    test "refuses a topic without a room" do
+    test "joins a shared session room" do
+      stub_d1_messages()
+      room = App.Chat.new_room()
+
+      assert {:ok, reply, _socket} = join_room(%{"nickname" => "guest"}, "room:" <> room)
+      assert reply.room == room
+    end
+
+    test "refuses a topic that is not a valid room slug" do
       stub_d1_messages()
       {:ok, socket} = connect(AppWeb.UserSocket, %{})
 
-      assert {:error, %{reason: "unknown room"}} = subscribe_and_join(socket, "room:", %{})
+      # Topics without the "room:" prefix are not routed to this channel at
+      # all (see AppWeb.UserSocket), so they cannot even be attempted here.
+      for topic <- ["room:", "room:Bad Room", "room:with/slash", "room:UPPER"] do
+        assert {:error, %{reason: "unknown room"}} = subscribe_and_join(socket, topic, %{}),
+               "expected #{topic} to be refused"
+      end
     end
 
     test "joins with d1_ready: false when the gateway is unreachable" do
       stub_d1_unavailable()
 
-      assert {:ok, reply, _socket} = join()
+      assert {:ok, reply, _socket} = join_room()
       refute reply.d1_ready
       assert reply.messages == []
     end
@@ -56,7 +69,7 @@ defmodule AppWeb.RoomChannelTest do
   describe "new_msg" do
     test "persists the message and pushes it back over the socket" do
       store = stub_d1_messages()
-      {:ok, _reply, socket} = join()
+      {:ok, _reply, socket} = join_room()
 
       ref = push(socket, "new_msg", %{"body" => "hello from the channel"})
       assert_reply ref, :ok, %{durability: :persisted}
@@ -68,7 +81,7 @@ defmodule AppWeb.RoomChannelTest do
 
     test "reaches subscribers that are not channels (the LiveView path)" do
       stub_d1_messages()
-      {:ok, _reply, socket} = join()
+      {:ok, _reply, socket} = join_room()
       Chat.subscribe("lobby")
 
       ref = push(socket, "new_msg", %{"body" => "fan out"})
@@ -78,7 +91,7 @@ defmodule AppWeb.RoomChannelTest do
 
     test "stays usable but ephemeral when D1 is unreachable" do
       stub_d1_unavailable()
-      {:ok, _reply, socket} = join()
+      {:ok, _reply, socket} = join_room()
 
       ref = push(socket, "new_msg", %{"body" => "no database here"})
       assert_reply ref, :ok, %{durability: :ephemeral}
@@ -87,7 +100,7 @@ defmodule AppWeb.RoomChannelTest do
 
     test "rejects a blank body" do
       stub_d1_messages()
-      {:ok, _reply, socket} = join()
+      {:ok, _reply, socket} = join_room()
 
       ref = push(socket, "new_msg", %{"body" => "   "})
       assert_reply ref, :error, %{reason: reason}
@@ -98,7 +111,7 @@ defmodule AppWeb.RoomChannelTest do
   describe "diagnostics" do
     test "ping echoes the client timestamp with server facts" do
       stub_d1_messages()
-      {:ok, _reply, socket} = join()
+      {:ok, _reply, socket} = join_room()
 
       ref = push(socket, "ping", %{"client_ts" => 1234})
       assert_reply ref, :ok, reply
@@ -109,7 +122,7 @@ defmodule AppWeb.RoomChannelTest do
 
     test "counts the joined client as present" do
       stub_d1_messages()
-      {:ok, _reply, socket} = join()
+      {:ok, _reply, socket} = join_room()
 
       # Presence is tracked in handle_info(:after_join); the ping round trip
       # guarantees that message has been processed.

@@ -19,10 +19,36 @@ defmodule App.Chat do
 
   @default_room "lobby"
   @history_limit 50
+  @room_format ~r/^[a-z0-9][a-z0-9-]{0,63}$/
 
-  @doc "The room every client joins by default."
+  @doc "The room joined when no room is named."
   @spec default_room() :: String.t()
   def default_room, do: @default_room
+
+  @doc """
+  Generates a room slug for a new shareable session.
+
+  Base32 without padding keeps it short, lowercase and safe in a URL, a
+  channel topic and a SQL bind alike.
+  """
+  @spec new_room() :: String.t()
+  def new_room do
+    :crypto.strong_rand_bytes(5) |> Base.encode32(case: :lower, padding: false)
+  end
+
+  @doc """
+  True when `room` is a safe slug.
+
+  Room names arrive from the client — in a URL and in a channel topic — so
+  everything that reaches a topic or the database is validated here.
+  """
+  @spec valid_room?(term()) :: boolean()
+  def valid_room?(room) when is_binary(room), do: Regex.match?(@room_format, room)
+  def valid_room?(_room), do: false
+
+  @doc "Returns `room` when it is a valid slug, otherwise the default room."
+  @spec room_or_default(term()) :: String.t()
+  def room_or_default(room), do: if(valid_room?(room), do: room, else: @default_room)
 
   @doc """
   The PubSub topic carrying `room`'s messages.

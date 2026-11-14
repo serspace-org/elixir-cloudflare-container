@@ -20,7 +20,17 @@ defmodule AppWeb.RoomChannel do
   require Logger
 
   @impl true
-  def join("room:" <> room, _params, socket) when room != "" do
+  def join("room:" <> room, _params, socket) do
+    if Chat.valid_room?(room) do
+      join_room(room, socket)
+    else
+      {:error, %{reason: "unknown room"}}
+    end
+  end
+
+  def join(_topic, _params, _socket), do: {:error, %{reason: "unknown room"}}
+
+  defp join_room(room, socket) do
     send(self(), :after_join)
 
     {history, d1_ready} =
@@ -44,8 +54,6 @@ defmodule AppWeb.RoomChannel do
        server: server_info()
      }, socket}
   end
-
-  def join(_topic, _params, _socket), do: {:error, %{reason: "unknown room"}}
 
   @impl true
   def handle_info(:after_join, socket) do

@@ -5,6 +5,60 @@ defmodule AppWeb.ChatLiveTest do
 
   alias App.Chat
 
+  describe "shareable sessions" do
+    test "joins the room named in the URL", %{conn: conn} do
+      stub_d1_messages()
+
+      {:ok, view, _html} = live(conn, ~p"/chat/standup")
+
+      assert has_element?(view, "#share-url[value$='/chat/standup']")
+    end
+
+    test "falls back to the default room for an invalid slug", %{conn: conn} do
+      stub_d1_messages()
+
+      {:ok, view, _html} = live(conn, ~p"/chat/Bad Room")
+
+      assert has_element?(view, "#share-url[value$='/chat/lobby']")
+    end
+
+    test "new session navigates to a fresh room, keeping the nickname", %{conn: conn} do
+      stub_d1_messages()
+      {:ok, view, _html} = live(conn, ~p"/chat/lobby?as=ada")
+
+      assert {:error, {:live_redirect, %{to: to}}} =
+               view |> element("#new-session") |> render_click()
+
+      assert to =~ ~r"^/chat/[a-z0-9]+\?as=ada$"
+      refute to =~ "/chat/lobby"
+    end
+
+    test "a message only reaches the room it was sent to", %{conn: conn} do
+      stub_d1_messages()
+      {:ok, view, _html} = live(conn, ~p"/chat/standup")
+
+      {:ok, _message, _durability} = Chat.create_message("other-room", "ada", "wrong room")
+      {:ok, _message, _durability} = Chat.create_message("standup", "ada", "right room")
+
+      html = render(view)
+      assert html =~ "right room"
+      refute html =~ "wrong room"
+    end
+
+    test "renaming re-tracks presence under the new name", %{conn: conn} do
+      stub_d1_messages()
+      {:ok, view, _html} = live(conn, ~p"/chat/lobby?as=ada")
+
+      assert has_element?(view, "#rename-input[value=ada]")
+      assert render(view) =~ "ada"
+
+      view |> element("#rename-form") |> render_submit(%{"nickname" => "grace"})
+
+      assert has_element?(view, "#rename-input[value=grace]")
+      assert has_element?(view, "#chat-present", "1")
+    end
+  end
+
   test "renders the transport diagnostics card", %{conn: conn} do
     stub_d1_messages()
 

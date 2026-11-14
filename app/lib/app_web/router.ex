@@ -20,10 +20,12 @@ defmodule AppWeb.Router do
     get "/", PageController, :home
     live "/tasks", TaskLive, :index
     live "/chat", ChatLive, :index
+    live "/chat/:room", ChatLive, :index
 
     # Plain (non-LiveView) page driving the raw channel client, so a channel
     # failure can be told apart from a LiveView failure.
     get "/probe", PageController, :probe
+    get "/probe/:room", PageController, :probe
   end
 
   # Health check endpoint (used by the Worker for readiness checks)

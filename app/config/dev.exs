@@ -29,6 +29,20 @@ config :app, AppWeb.Endpoint,
     tailwind: {Tailwind, :install_and_run, [:app, ~w(--watch)]}
   ]
 
+# Local stand-in for the Worker's D1 gateway, so `mix phx.server` has real
+# persistence without Docker or `wrangler dev`. It serves the same HTTP
+# contract from SQLite (which is what D1 is), applying the same
+# cloudflare/migrations/*.sql files. Delete the file below to reset it.
+#
+# Point :d1_url back at "http://d1.internal" (or drop both settings) to run
+# against the real gateway under `wrangler dev`.
+config :app, :d1_url, "http://127.0.0.1:4100"
+
+config :app, :d1_local_gateway,
+  port: 4100,
+  database: Path.expand("../priv/d1_local.sqlite3", __DIR__),
+  migrations: Path.expand("../../cloudflare/migrations", __DIR__)
+
 # ## SSL Support
 #
 # In order to use HTTPS in development, a self-signed

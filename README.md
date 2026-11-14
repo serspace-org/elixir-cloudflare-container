@@ -22,7 +22,8 @@ Database access goes through a private gateway inside the Worker: Phoenix makes 
 
 - **`app/`** — Phoenix 1.8.5 app (LiveView, Ecto, Bandit, Swoosh, Tailwind, esbuild)
   - `App.Tasks` — CRUD context over D1 (`/tasks` LiveView)
-  - `App.Chat` — chat context over D1, broadcast with `Phoenix.PubSub` (`/chat` LiveView, `/probe` raw channel client)
+  - `App.Chat` — chat context over D1, broadcast with `Phoenix.PubSub` (`/chat/:room` LiveView, `/probe/:room` raw channel client)
+  - `App.D1.LocalGateway` — dev/test stand-in for the Worker's D1 gateway, backed by local SQLite
   - `App.D1` — HTTP client for the Worker's private D1 gateway
 - **`src/index.ts`** — Worker + Durable Object: container lifecycle, HTTP/WebSocket proxying, and the `D1Gateway` entrypoint
 - **`cloudflare/migrations/`** — SQL migrations applied to D1 with Wrangler
@@ -112,6 +113,56 @@ The first request may take 5–15 seconds (container cold start). Subsequent req
 
 ## Chat (WebSocket + Channels) demo
 
+### Sessions and sharing
+
+Both chat clients are room-scoped, so a session is just a URL you can hand to someone:
+
+| URL | What it is |
+| --- | --- |
+| `/chat` | LiveView client in the default `lobby` room |
+| `/chat/:room` | LiveView client in a named room |
+| `/probe/:room` | raw-channel client in the same room |
+
+**New session** on `/chat` generates a fresh room slug and navigates to it; the share box next
+to it holds the link to send. Rooms are isolated — messages, history and presence are all
+per-room. Room names are validated against `^[a-z0-9][a-z0-9-]{0,63}$` (`App.Chat.valid_room?/1`)
+because the name reaches both a channel topic and the database; anything else falls back to
+`lobby`. `?as=<name>` sets your display name, and the **Rename** field changes it live.
+
+To share a local session with someone on your network, dev is bound to loopback — change
+`http: [ip: {127, 0, 0, 1}]` to `ip: {0, 0, 0, 0}` in `app/config/dev.exs` and give them
+`http://<your-lan-ip>:4000/chat/<room>`. `check_origin` is already disabled in dev.
+
+### Local persistence (no Docker)
+
+`mix phx.server` has real persistence: `App.D1.LocalGateway` (dev/test only) serves the same
+HTTP contract as the Worker's `D1Gateway` from a local SQLite file, applying the very same
+`cloudflare/migrations/*.sql`. D1 *is* SQLite, so the SQL and the migrations are the real
+ones — and because the migrations run here too, a broken migration fails locally first.
+
+```bash
+cd app && mix phx.server     # applies migrations to app/priv/d1_local.sqlite3 on boot
+curl localhost:4000/health/sockets
+# {"d1_ready":true, ...}
+curl "localhost:4100/messages?room=lobby"    # the gateway itself, if you want to poke it
+rm app/priv/d1_local.sqlite3                 # reset
+```
+
+History survives a server restart, which is the thing to check: send a message, restart,
+reload the page, and it should still be there.
+
+It is **not** a substitute for `wrangler dev`: it exercises the SQL, the migrations and the
+HTTP contract, but not the `d1.internal` outbound intercept or Cloudflare's D1. To run
+against the real gateway, point `:d1_url` back at `http://d1.internal` in
+`app/config/dev.exs` (and drop `:d1_local_gateway`), then:
+
+```bash
+pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --local
+pnpm exec wrangler dev
+```
+
+### Two sockets, verified separately
+
 Phoenix's two socket paths are verified separately, because they fail differently:
 
 | Route | Socket | What a failure tells you |
@@ -128,12 +179,14 @@ in use, so a degraded connection is visible rather than invisible.
 
 ```bash
 pnpm ws:smoke https://<your-host>   # scripted: handshake, join, broadcast round trip
+SMOKE_ROOM=standup pnpm ws:smoke https://<your-host>   # in a specific room
 
-curl https://<your-host>/health/sockets
+curl https://<your-host>/health/sockets        # add ?room=<room> for a specific room
 # {"status":"ok","node":"...","node_uptime_ms":123456,"present":0,"d1_ready":true,...}
 ```
 
-By hand, open `/chat` and `/probe` side by side:
+By hand, open `/chat/<room>` and `/probe/<room>` side by side (or share the link and have
+someone join from their own machine):
 
 1. **Transport** on both pages must say `websocket`. `/chat` turns the card red and says so
    explicitly if the LiveView socket degraded to long-polling.

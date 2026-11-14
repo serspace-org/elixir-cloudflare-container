@@ -20,9 +20,9 @@ defmodule AppWeb.ChatLive do
   alias AppWeb.Presence
 
   @impl true
-  def mount(_params, _session, socket) do
-    room = Chat.default_room()
-    nickname = "live-" <> (:crypto.strong_rand_bytes(3) |> Base.encode16(case: :lower))
+  def mount(params, _session, socket) do
+    room = Chat.room_or_default(params["room"])
+    nickname = nickname(params)
 
     {messages, d1_ready} =
       case Chat.recent_messages(room) do
@@ -46,8 +46,10 @@ defmodule AppWeb.ChatLive do
     {:ok,
      socket
      |> assign(
-       page_title: "Chat",
+       page_title: "Chat · #{room}",
        room: room,
+       share_url: url(~p"/chat/#{room}"),
+       probe_url: url(~p"/probe/#{room}"),
        nickname: nickname,
        d1_ready: d1_ready,
        durability: nil,
@@ -62,7 +64,35 @@ defmodule AppWeb.ChatLive do
      |> stream(:messages, messages)}
   end
 
+  # Starts a fresh shareable session. push_navigate remounts the LiveView, so
+  # the old room's subscriptions and presence go with the old process.
   @impl true
+  def handle_event("new_session", _params, socket) do
+    {:noreply,
+     push_navigate(socket, to: ~p"/chat/#{Chat.new_room()}?as=#{socket.assigns.nickname}")}
+  end
+
+  def handle_event("rename", %{"nickname" => nickname}, socket) do
+    case String.trim(nickname) do
+      "" ->
+        {:noreply, socket}
+
+      nickname ->
+        nickname = String.slice(nickname, 0, 64)
+        topic = presence_topic(socket.assigns.room)
+
+        Presence.untrack(self(), topic, socket.assigns.nickname)
+
+        {:ok, _ref} =
+          Presence.track(self(), topic, nickname, %{
+            online_at: System.system_time(:second),
+            transport: "liveview"
+          })
+
+        {:noreply, assign(socket, nickname: nickname)}
+    end
+  end
+
   def handle_event("send", %{"body" => body}, socket) do
     case Chat.create_message(socket.assigns.room, socket.assigns.nickname, body) do
       {:ok, _message, durability} ->
@@ -103,6 +133,25 @@ defmodule AppWeb.ChatLive do
   end
 
   ## Helpers
+
+  # A client-supplied nickname, so the same person keeps their name across a
+  # "new session" navigation; falls back to a random one.
+  defp nickname(params) do
+    case params["as"] do
+      name when is_binary(name) ->
+        case String.trim(name) do
+          "" -> random_nickname()
+          trimmed -> String.slice(trimmed, 0, 64)
+        end
+
+      _other ->
+        random_nickname()
+    end
+  end
+
+  defp random_nickname do
+    "live-" <> (:crypto.strong_rand_bytes(3) |> Base.encode16(case: :lower))
+  end
 
   defp presence_topic(room), do: "room:" <> room
 

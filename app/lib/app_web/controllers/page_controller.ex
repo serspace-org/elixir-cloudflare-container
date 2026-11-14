@@ -15,8 +15,14 @@ defmodule AppWeb.PageController do
   Keeping it off LiveView means a failure here points at the WebSocket
   transport or the channel, not at LiveView.
   """
-  def probe(conn, _params) do
-    render(conn, :probe, room: App.Chat.default_room())
+  def probe(conn, params) do
+    room = App.Chat.room_or_default(params["room"])
+
+    render(conn, :probe,
+      room: room,
+      share_url: url(~p"/chat/#{room}"),
+      probe_url: url(~p"/probe/#{room}")
+    )
   end
 
   @doc """
@@ -25,9 +31,9 @@ defmodule AppWeb.PageController do
   `node_uptime_ms` is the useful one: if it resets between polls, the
   container restarted rather than the socket merely reconnecting.
   """
-  def socket_health(conn, _params) do
+  def socket_health(conn, params) do
     {uptime_ms, _since_last} = :erlang.statistics(:wall_clock)
-    room = App.Chat.default_room()
+    room = App.Chat.room_or_default(params["room"])
 
     json(conn, %{
       status: "ok",

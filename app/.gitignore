@@ -35,3 +35,6 @@ app-*.tar
 npm-debug.log
 /assets/node_modules/
 
+
+# Local D1 stand-in database (see config/dev.exs)
+/priv/d1_local.sqlite3*
