@@ -12,9 +12,11 @@ A Phoenix 1.8 LiveView app packaged as a Docker container and served on Cloudfla
 Client (HTTPS) → Worker (src/index.ts) → ElixirContainer (Durable Object) → container, Phoenix on :4000
                                                                                   ↓ http://d1.internal
                                                               D1Gateway (WorkerEntrypoint) → D1 binding `DB`
+
+dev: no Worker — App.D1 talks to App.D1.LocalGateway on 127.0.0.1:4100 (SQLite file)
 ```
 
-Three pieces that only make sense together:
+Five pieces that only make sense together:
 
 1. **`src/index.ts` — Worker + `ElixirContainer` Durable Object.** The default fetch routes *every* request to a single DO instance (`getByName("singleton")`). The DO starts the container on first request, polls `GET /health` until 200 (up to ~30s), sets a 10-minute inactivity timeout, then proxies HTTP and WebSocket traffic verbatim to port 4000, injecting `x-forwarded-proto: https`. Container env (`SECRET_KEY_BASE`, `PHX_HOST`, `PORT`) is passed at `container.start()` from Worker secrets — the image carries no config.
 
@@ -38,7 +40,9 @@ Elixir (run from `app/`):
 
 ```bash
 mix setup                      # deps + assets (ecto.setup needs local Postgres)
-mix phx.server                 # dev server on :4000
+mix deps.get && mix assets.setup && mix assets.build   # the Postgres-free equivalent
+mix phx.server                 # dev server on :4000, with local D1 persistence on :4100
+rm priv/d1_local.sqlite3       # reset the local D1 stand-in database
 mix test                       # no Postgres needed: the `test` alias only runs ecto.create/
                                # ecto.migrate when DATABASE_URL is set (see mix.exs)
 mix test test/path_test.exs:42 # single test
@@ -56,6 +60,7 @@ pnpm exec wrangler d1 migrations create phoenix-cf-container-db <name>
 pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --local
 pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --remote
 pnpm exec wrangler tail                                                 # Worker logs
+pnpm ws:smoke https://<host>                                            # WebSocket/channel smoke test
 ```
 
 **Deploy from CI, not locally, on Apple Silicon.** `wrangler deploy` cross-builds the `linux/amd64` image under QEMU and the BEAM crashes during dependency compilation. Pushing to `main` runs `.github/workflows/deploy.yml` on native AMD64 `ubuntu-latest`. The `ERL_FLAGS="+JMsingle true"` lines in both Dockerfile stages are a workaround for this same QEMU bug — don't remove them.
@@ -68,5 +73,6 @@ Apply D1 migrations **before** deploying code that depends on them, and keep the
 - A `phx-hook` that only pushes events must **not** sit on a `phx-update="ignore"` element; that would block the server from updating the element it reports into (this bit the `/chat` diagnostics card).
 - `/health` must stay unauthenticated, fast, and excluded from `force_ssl` (`config/prod.exs`) — the DO's readiness poll depends on it, and the container never becomes ready if it redirects.
 - Container disk is ephemeral. Durable state belongs in D1.
+- `App.D1.LocalGateway` binds port 4100, so only one dev server runs at a time — a second one fails to boot there, and the error names Bandit rather than the port.
 - Assets are Elixir-managed (`esbuild`/`tailwind` Hex packages); there is no Node.js in the Docker build and no `assets/package.json`. Tailwind v4, no `tailwind.config.js`.
 - Secrets (`SECRET_KEY_BASE`, `PHX_HOST`) are Worker secrets set with `wrangler secret put`, mirrored into `.dev.vars` for local dev.

@@ -1,6 +1,6 @@
 # Phoenix on Cloudflare Containers
 
-A full Phoenix 1.8 LiveView application deployed as a Docker container on Cloudflare Containers, with a Cloudflare Worker + Durable Object as the proxy layer (including WebSocket support for LiveView).
+A full Phoenix 1.8 LiveView application deployed as a Docker container on Cloudflare Containers, with a Cloudflare Worker + Durable Object as the proxy layer — including WebSocket support for both LiveView and plain Phoenix Channels.
 
 This repo is a work in progress.
 
@@ -18,13 +18,16 @@ The Worker starts the container on first request, polls `/health` until it's rea
 
 Database access goes through a private gateway inside the Worker: Phoenix makes plain HTTP requests to the virtual hostname `d1.internal`, which the Worker intercepts and serves with its `DB` D1 binding (see `D1Gateway` in `src/index.ts`). The database is never exposed to the public internet and no database credentials ship in the container image.
 
+In local development there is no Worker, so `App.D1.LocalGateway` serves the same HTTP contract from a local SQLite file. See [Local development](#local-development).
+
 ## What's here
 
 - **`app/`** — Phoenix 1.8.5 app (LiveView, Ecto, Bandit, Swoosh, Tailwind, esbuild)
-  - `App.Tasks` — CRUD context over D1 (`/tasks` LiveView)
-  - `App.Chat` — chat context over D1, broadcast with `Phoenix.PubSub` (`/chat/:room` LiveView, `/probe/:room` raw channel client)
-  - `App.D1.LocalGateway` — dev/test stand-in for the Worker's D1 gateway, backed by local SQLite
   - `App.D1` — HTTP client for the Worker's private D1 gateway
+  - `App.Tasks` — CRUD context over D1 (`/tasks`)
+  - `App.Chat` — chat context over D1, broadcast with `Phoenix.PubSub` (`/chat/:room`, `/probe/:room`)
+  - `App.D1.LocalGateway` — dev/test stand-in for the Worker's D1 gateway, backed by local SQLite
+  - `app/AGENTS.md` — Phoenix/Elixir/LiveView coding rules for everything under `app/`
 - **`src/index.ts`** — Worker + Durable Object: container lifecycle, HTTP/WebSocket proxying, and the `D1Gateway` entrypoint
 - **`cloudflare/migrations/`** — SQL migrations applied to D1 with Wrangler
 - **`Dockerfile`** — Multi-stage build: compiles an Elixir release with assets, copies into minimal Alpine runtime
@@ -32,10 +35,23 @@ Database access goes through a private gateway inside the Worker: Phoenix makes 
 - **`scripts/ws-smoke.mjs`** — post-deploy WebSocket/channel smoke test (`pnpm ws:smoke <url>`)
 - **`.github/workflows/deploy.yml`** — CI workflow that deploys on push to `main`
 
+## Routes
+
+| Route | What it is |
+| --- | --- |
+| `/` | stock Phoenix landing page |
+| `/tasks` | D1-backed CRUD demo (LiveView) |
+| `/chat`, `/chat/:room` | chat demo on LiveView's `/live` socket |
+| `/probe`, `/probe/:room` | same chat room over a raw `Phoenix.Channel` on `/socket` |
+| `/health` | readiness probe used by the Durable Object — unauthenticated, never redirects |
+| `/health/sockets` | socket/node diagnostics as JSON; takes an optional `?room=` |
+
 ## Prerequisites
 
 - Cloudflare Workers **Paid** plan (required for Containers)
 - GitHub repo secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`
+- Elixir 1.15+ for local development (`mix.exs` requires `~> 1.15`; the Docker build uses 1.20)
+- Node.js 22+ (the smoke-test script uses the built-in `WebSocket`)
 
 ## Setup
 
@@ -46,13 +62,17 @@ npx wrangler secret put SECRET_KEY_BASE   # output of: mix phx.gen.secret
 npx wrangler secret put PHX_HOST           # e.g. phoenix-cf-container.serspace.dev
 ```
 
+For local `wrangler dev`, mirror the same values into `.dev.vars` (gitignored).
+
 ### 2. Database (Cloudflare D1)
+
+`wrangler.toml` already has a `[[d1_databases]]` block wired to the `DB` binding. Working from a fork means creating your own database and replacing `database_id`:
 
 ```bash
 pnpm exec wrangler d1 create phoenix-cf-container-db
 ```
 
-Uncomment the `[[d1_databases]]` block at the bottom of `wrangler.toml` and paste the printed `database_id`. Then apply the migration:
+Then apply the migrations:
 
 ```bash
 # Test against a local D1 first (optional):
@@ -62,7 +82,7 @@ pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --local
 pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --remote
 ```
 
-Until the binding is configured, `/tasks` shows a setup notice and everything else keeps working — the gateway activates only when the `DB` binding exists.
+Until the binding is configured, the Worker skips the gateway entirely: `/tasks` shows a setup notice and `/chat` runs in ephemeral mode, so nothing else breaks.
 
 ### 3. GitHub repo secrets
 
@@ -71,11 +91,61 @@ In your GitHub repo settings, add:
 - `CLOUDFLARE_API_TOKEN` — a Cloudflare API token with Workers and Containers permissions
 - `CLOUDFLARE_ACCOUNT_ID` — your Cloudflare account ID
 
+Optionally add a repo **variable** `SMOKE_URL` (the deployed hostname) to run the WebSocket smoke test after each deploy. Without it, that CI step is skipped.
+
+## Local development
+
+Run the Phoenix app directly for everything except the Worker itself:
+
+```bash
+cd app
+mix setup          # NOTE: includes ecto.setup, which needs Postgres on localhost
+mix phx.server     # http://localhost:4000
+```
+
+The app persists through D1, not Postgres, so `App.Repo` is only supervised when `DATABASE_URL` is set. If you don't have Postgres, skip the vestigial Ecto step:
+
+```bash
+mix deps.get && mix assets.setup && mix assets.build
+mix phx.server
+```
+
+### Local persistence (no Docker)
+
+`mix phx.server` has real persistence. `App.D1.LocalGateway` (compiled in dev/test only) serves the same HTTP contract as the Worker's `D1Gateway` from a local SQLite file on port 4100, applying the very same `cloudflare/migrations/*.sql` on boot. D1 *is* SQLite, so the SQL and the migrations exercised locally are the real ones — a broken migration fails here first.
+
+```bash
+curl localhost:4000/health/sockets            # {"d1_ready":true, ...}
+curl "localhost:4100/messages?room=lobby"     # the gateway itself, if you want to poke it
+rm app/priv/d1_local.sqlite3                  # reset the local database
+```
+
+History survives a server restart, which is the thing worth checking: send a message, restart, reload, and it should still be there. Migrations are tracked in a `local_migrations` table, so a restart does not re-apply them.
+
+It is **not** a substitute for `wrangler dev`: it covers the SQL, the migrations and the HTTP contract, but not the `d1.internal` outbound intercept or Cloudflare's D1. To run against the real gateway, point `:d1_url` back at `http://d1.internal` in `app/config/dev.exs`, drop the `:d1_local_gateway` config, and use:
+
+```bash
+pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --local
+pnpm exec wrangler dev
+```
+
+Because the local gateway binds port 4100, only one dev server can run at a time; a second one fails to boot on that port.
+
+### Tests
+
+```bash
+cd app
+mix test          # no Postgres needed
+mix precommit     # compile --warnings-as-errors + deps.unlock --unused + format + test
+```
+
+D1 calls are stubbed with `Req.Test` through `App.D1Stub`, so the suite never reaches the network. `test/app/d1/local_gateway_test.exs` runs the repo's real migration files, which makes it a check on the migrations as well as the gateway.
+
 ## Deploy
 
 ### Via CI (recommended)
 
-Push to the `main` branch. GitHub Actions builds the Docker image on native AMD64 (`ubuntu-latest`), pushes it to Cloudflare's registry, and deploys the Worker. The first deploy takes 5–10 minutes for the image build.
+Push to the `main` branch. GitHub Actions builds the Docker image on native AMD64 (`ubuntu-latest`), pushes it to Cloudflare's registry, and deploys the Worker. The first deploy takes 5–10 minutes for the image build. If the `SMOKE_URL` repo variable is set, the WebSocket smoke test runs against the deployment afterwards and fails the build if the socket is broken.
 
 ### Locally
 
@@ -97,19 +167,9 @@ pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --remote
 
 **Apply a migration before deploying code that depends on it**, and keep migrations additive (new tables/columns) while the previous version is still serving traffic. Wrangler records applied migrations in D1's `d1_migrations` table.
 
-Note: D1 is not an Ecto repo. `App.Tasks` validates changes with the `App.Tasks.Task` embedded schema and persists through `App.D1`; `mix ecto.*` tasks do not apply.
+A new table or endpoint touches four places, which have to stay in step: the migration, a route in `D1Gateway` (`src/index.ts`), a client function in `app/lib/app/d1.ex`, and the same route in `App.D1.LocalGateway.Router`. The `tasks` and `messages` tables are both wired this way — copy either. Keep all SQL parameterized (`?1`-style binds).
 
-## Test
-
-```bash
-curl https://<your-host>/
-curl https://<your-host>/health
-# ok
-```
-
-Then open `/tasks` for the D1-backed CRUD demo.
-
-The first request may take 5–15 seconds (container cold start). Subsequent requests are instant while the container is warm.
+Note: D1 is not an Ecto repo. `App.Tasks` and `App.Chat` validate with embedded schemas (`App.Tasks.Task`, `App.Chat.Message`) and persist through `App.D1`; `mix ecto.*` tasks do not apply.
 
 ## Chat (WebSocket + Channels) demo
 
@@ -123,43 +183,9 @@ Both chat clients are room-scoped, so a session is just a URL you can hand to so
 | `/chat/:room` | LiveView client in a named room |
 | `/probe/:room` | raw-channel client in the same room |
 
-**New session** on `/chat` generates a fresh room slug and navigates to it; the share box next
-to it holds the link to send. Rooms are isolated — messages, history and presence are all
-per-room. Room names are validated against `^[a-z0-9][a-z0-9-]{0,63}$` (`App.Chat.valid_room?/1`)
-because the name reaches both a channel topic and the database; anything else falls back to
-`lobby`. `?as=<name>` sets your display name, and the **Rename** field changes it live.
+**New session** on `/chat` generates a fresh room slug and navigates to it; the share box next to it holds the link to send. Rooms are isolated — messages, history and presence are all per-room. Room names are validated against `^[a-z0-9][a-z0-9-]{0,63}$` (`App.Chat.valid_room?/1`) because the name reaches both a channel topic and the database; anything else falls back to `lobby`. `?as=<name>` sets your display name, and the **Rename** field changes it live.
 
-To share a local session with someone on your network, dev is bound to loopback — change
-`http: [ip: {127, 0, 0, 1}]` to `ip: {0, 0, 0, 0}` in `app/config/dev.exs` and give them
-`http://<your-lan-ip>:4000/chat/<room>`. `check_origin` is already disabled in dev.
-
-### Local persistence (no Docker)
-
-`mix phx.server` has real persistence: `App.D1.LocalGateway` (dev/test only) serves the same
-HTTP contract as the Worker's `D1Gateway` from a local SQLite file, applying the very same
-`cloudflare/migrations/*.sql`. D1 *is* SQLite, so the SQL and the migrations are the real
-ones — and because the migrations run here too, a broken migration fails locally first.
-
-```bash
-cd app && mix phx.server     # applies migrations to app/priv/d1_local.sqlite3 on boot
-curl localhost:4000/health/sockets
-# {"d1_ready":true, ...}
-curl "localhost:4100/messages?room=lobby"    # the gateway itself, if you want to poke it
-rm app/priv/d1_local.sqlite3                 # reset
-```
-
-History survives a server restart, which is the thing to check: send a message, restart,
-reload the page, and it should still be there.
-
-It is **not** a substitute for `wrangler dev`: it exercises the SQL, the migrations and the
-HTTP contract, but not the `d1.internal` outbound intercept or Cloudflare's D1. To run
-against the real gateway, point `:d1_url` back at `http://d1.internal` in
-`app/config/dev.exs` (and drop `:d1_local_gateway`), then:
-
-```bash
-pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --local
-pnpm exec wrangler dev
-```
+To share a local session with someone on your network, note that dev is bound to loopback — change `http: [ip: {127, 0, 0, 1}]` to `ip: {0, 0, 0, 0}` in `app/config/dev.exs` and give them `http://<your-lan-ip>:4000/chat/<room>`. `check_origin` is already disabled in dev.
 
 ### Two sockets, verified separately
 
@@ -167,13 +193,10 @@ Phoenix's two socket paths are verified separately, because they fail differentl
 
 | Route | Socket | What a failure tells you |
 | --- | --- | --- |
-| `/chat` | LiveView on `/live` | LiveView real-time updates |
-| `/probe` | raw `Phoenix.Channel` on `/socket`, **no long-poll fallback** | the WebSocket upgrade itself |
+| `/chat/:room` | LiveView on `/live` | LiveView real-time updates |
+| `/probe/:room` | raw `Phoenix.Channel` on `/socket`, **no long-poll fallback** | the WebSocket upgrade itself |
 
-The reason for two is that `assets/js/app.js` sets `longPollFallbackMs`, so a broken
-WebSocket upgrade makes LiveView quietly fall back to long-polling and *everything still
-looks fine*. `/socket` sets `longpoll: false`, and both pages print the transport actually
-in use, so a degraded connection is visible rather than invisible.
+The reason for two is that `assets/js/app.js` sets `longPollFallbackMs`, so a broken WebSocket upgrade makes LiveView quietly fall back to long-polling and *everything still looks fine*. `/socket` sets `longpoll: false`, and both pages print the transport actually in use, so a degraded connection is visible rather than invisible.
 
 ### What to check
 
@@ -185,26 +208,28 @@ curl https://<your-host>/health/sockets        # add ?room=<room> for a specific
 # {"status":"ok","node":"...","node_uptime_ms":123456,"present":0,"d1_ready":true,...}
 ```
 
-By hand, open `/chat/<room>` and `/probe/<room>` side by side (or share the link and have
-someone join from their own machine):
+By hand, open `/chat/<room>` and `/probe/<room>` side by side (or share the link and have someone join from their own machine):
 
-1. **Transport** on both pages must say `websocket`. `/chat` turns the card red and says so
-   explicitly if the LiveView socket degraded to long-polling.
-2. **Cross-socket fan-out** — a message sent in `/probe` must appear in `/chat` and vice
-   versa. That exercises `Phoenix.PubSub` between two different socket implementations.
+1. **Transport** on both pages must say `websocket`. `/chat` turns the card red and says so explicitly if the LiveView socket degraded to long-polling.
+2. **Cross-socket fan-out** — a message sent in `/probe` must appear in `/chat` and vice versa. That exercises `Phoenix.PubSub` between two different socket implementations.
 3. **Presence** — *Online now* must rise and fall as you open and close tabs.
-4. **Round trip** on `/probe` is the real latency through Worker → Durable Object →
-   container.
-5. **Node uptime** is the one to watch on a reconnect: if it *keeps climbing*, only the
-   socket reconnected; if it *resets to zero*, the container cold-started and you lost BEAM
-   state. Persisted history survives either way, which is the point of storing it in D1.
-6. **Idle survival** — leave a tab open and idle for more than 10 minutes (the Durable
-   Object's `INACTIVITY_TIMEOUT_MS`). Phoenix heartbeats every 30s, so the socket should
-   stay up and node uptime should keep climbing. If it does not, WebSocket traffic is not
-   counting as container activity and the timeout needs raising or a keepalive adding.
+4. **Round trip** on `/probe` is the real latency through Worker → Durable Object → container.
+5. **Node uptime** is the one to watch on a reconnect: if it *keeps climbing*, only the socket reconnected; if it *resets to zero*, the container cold-started and you lost BEAM state. Persisted history survives either way, which is the point of storing it in D1.
+6. **Idle survival** — leave a tab open and idle for more than 10 minutes (the Durable Object's `INACTIVITY_TIMEOUT_MS`). Phoenix heartbeats every 30s, so the socket should stay up and node uptime should keep climbing. If it does not, WebSocket traffic is not counting as container activity and the timeout needs raising or a keepalive adding.
 
-Without a D1 binding — plain `mix phx.server`, for instance — chat still works but marks
-itself *ephemeral* and does not persist history, so the transport can be tested on its own.
+When the D1 gateway is unreachable — no `DB` binding, or the local gateway disabled — chat still works but marks itself *ephemeral* and keeps no history, so the transport can be tested on its own.
+
+## Verifying a deployment
+
+```bash
+curl https://<your-host>/
+curl https://<your-host>/health
+# ok
+```
+
+Then open `/tasks` for the D1-backed CRUD demo and `/chat` for the WebSocket demo.
+
+The first request may take 5–15 seconds (container cold start). Subsequent requests are instant while the container is warm.
 
 ## Notes
 
@@ -216,3 +241,4 @@ itself *ephemeral* and does not persist history, so the transport can be tested 
 - WebSocket upgrades are forwarded transparently to the container, for both LiveView and plain channels
 - Every request is routed to a single Durable Object (`getByName("singleton")`), so all sockets share one BEAM node and local `Phoenix.PubSub` is sufficient — sharding the DO would split chat and presence per instance
 - Asset pipeline: esbuild + tailwind are Elixir-managed (no Node.js needed in the Docker build)
+- `pnpm` is the package manager for local work; CI uses `npm install` (both lockfiles are committed)

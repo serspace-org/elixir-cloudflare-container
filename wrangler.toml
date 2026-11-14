@@ -23,16 +23,16 @@ class_name = "ElixirContainer"
 type = "durable-object"
 storage = "sqlite"
 
-# Cloudflare D1 database (used by the /tasks demo).
+# Cloudflare D1 database (backs the /tasks and /chat demos).
 #
-# Setup:
+# Working from a fork means pointing this at your own database:
 #   1. pnpm exec wrangler d1 create phoenix-cf-container-db
-#   2. Uncomment this block and paste the database_id printed above.
+#   2. Replace database_id below with the id printed above.
 #   3. pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --remote
 #   4. Redeploy the Worker (CI on push to main, or wrangler deploy).
 #
-# Until the binding exists, /tasks shows a setup notice and nothing else changes.
-#
+# Remove this block and the Worker skips the gateway entirely: /tasks shows a
+# setup notice and /chat runs in ephemeral mode. Nothing else changes.
 [[d1_databases]]
 # The Worker (src/index.ts) reads this binding as `env.DB` and only registers
 # the private D1 gateway when it exists — keep the name "DB".
