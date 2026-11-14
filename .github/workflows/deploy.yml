@@ -21,3 +21,12 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # Fails the build if the WebSocket upgrade through the Worker and
+      # Durable Object breaks. A browser would silently long-poll instead.
+      # Set the SMOKE_URL repository variable to the deployed hostname.
+      - name: WebSocket smoke test
+        if: ${{ vars.SMOKE_URL != '' }}
+        run: npm run ws:smoke -- "$SMOKE_URL"
+        env:
+          SMOKE_URL: ${{ vars.SMOKE_URL }}

@@ -19,6 +19,13 @@ defmodule AppWeb.Router do
 
     get "/", PageController, :home
     live "/tasks", TaskLive, :index
+    live "/chat", ChatLive, :index
+    live "/chat/:room", ChatLive, :index
+
+    # Plain (non-LiveView) page driving the raw channel client, so a channel
+    # failure can be told apart from a LiveView failure.
+    get "/probe", PageController, :probe
+    get "/probe/:room", PageController, :probe
   end
 
   # Health check endpoint (used by the Worker for readiness checks)
@@ -26,6 +33,7 @@ defmodule AppWeb.Router do
     pipe_through :api
 
     get "/health", PageController, :health
+    get "/health/sockets", PageController, :socket_health
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development

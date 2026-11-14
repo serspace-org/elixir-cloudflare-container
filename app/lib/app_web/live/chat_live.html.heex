@@ -1,0 +1,149 @@
+<div class="mx-auto max-w-2xl px-4 py-10">
+  <h1 class="text-2xl font-bold tracking-tight">
+    Chat <span class="font-mono text-base font-normal text-zinc-500">{@room}</span>
+  </h1>
+  <p class="mt-1 text-sm text-zinc-500">
+    LiveView over the <code>/live</code>
+    WebSocket, fanned out with <code>Phoenix.PubSub</code>
+    and persisted in Cloudflare D1.
+  </p>
+
+  <div class="mt-6 rounded-lg border border-zinc-200 p-4">
+    <div class="flex flex-wrap items-center gap-2">
+      <label for="share-url" class="text-sm text-zinc-500">Share this session</label>
+      <button
+        id="new-session"
+        phx-click="new_session"
+        class="ml-auto rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-50"
+      >
+        New session
+      </button>
+    </div>
+    <div class="mt-2 flex gap-2">
+      <input
+        id="share-url"
+        type="text"
+        readonly
+        value={@share_url}
+        class="flex-1 rounded-md border border-zinc-300 bg-zinc-50 px-3 py-2 font-mono text-xs"
+      />
+      <button
+        id="copy-share-url"
+        type="button"
+        phx-hook=".CopyLink"
+        data-url={@share_url}
+        class="rounded-md border border-zinc-300 px-3 py-2 text-sm font-medium hover:bg-zinc-50"
+      >
+        Copy
+      </button>
+    </div>
+    <p class="mt-2 text-xs text-zinc-500">
+      Anyone opening that link joins this room. The raw channel client for the same room is at <a
+        href={@probe_url}
+        class="underline"
+      >{@probe_url}</a>.
+    </p>
+
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".CopyLink">
+      export default {
+        mounted() {
+          this.el.addEventListener("click", async () => {
+            const label = this.el.textContent
+            try {
+              await navigator.clipboard.writeText(this.el.dataset.url)
+              this.el.textContent = "Copied"
+            } catch (_error) {
+              // Clipboard needs a secure context; the input is selectable anyway.
+              this.el.textContent = "Select it"
+            }
+            setTimeout(() => { this.el.textContent = label }, 1500)
+          })
+        }
+      }
+    </script>
+  </div>
+
+  <div
+    id="transport-info"
+    phx-hook="TransportInfo"
+    class={[
+      "mt-6 rounded-lg border p-4 text-sm",
+      @websocket? == false && "border-red-300 bg-red-50",
+      @websocket? != false && "border-zinc-200"
+    ]}
+  >
+    <dl class="grid grid-cols-2 gap-x-4 gap-y-2">
+      <dt class="text-zinc-500">Transport</dt>
+      <dd id="chat-transport" class="font-mono">
+        {@transport || "measuring…"}
+        <span :if={@websocket? == false} class="font-sans font-semibold text-red-700">
+          — not a WebSocket, the upgrade is failing
+        </span>
+      </dd>
+      <dt class="text-zinc-500">Nickname</dt>
+      <dd id="chat-nickname" class="font-mono">{@nickname}</dd>
+      <dt class="text-zinc-500">Online now</dt>
+      <dd id="chat-present" class="font-mono">{@present}</dd>
+      <dt class="text-zinc-500">Reconnects</dt>
+      <dd id="chat-reconnects" class="font-mono">{@reconnects}</dd>
+      <dt class="text-zinc-500">Node uptime</dt>
+      <dd id="chat-uptime" class="font-mono">{div(@node_uptime_ms, 1000)}s</dd>
+      <dt class="text-zinc-500">Persistence</dt>
+      <dd id="chat-durability" class="font-mono">
+        {if @d1_ready, do: "D1", else: "ephemeral (D1 unreachable)"}
+      </dd>
+    </dl>
+  </div>
+
+  <p :if={@error} id="chat-error" class="mt-4 text-sm text-red-700">{@error}</p>
+
+  <form id="rename-form" phx-submit="rename" class="mt-6 flex gap-2">
+    <input
+      id="rename-input"
+      type="text"
+      name="nickname"
+      value={@nickname}
+      maxlength="64"
+      aria-label="Your name"
+      class="w-48 rounded-md border border-zinc-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-500"
+    />
+    <button type="submit" class="text-sm text-zinc-600 underline hover:text-zinc-900">
+      Rename
+    </button>
+  </form>
+
+  <form id="chat-form" phx-submit="send" class="mt-3 flex gap-2">
+    <input
+      id="chat-input"
+      type="text"
+      name="body"
+      placeholder="Say something"
+      autocomplete="off"
+      required
+      maxlength="2000"
+      class="flex-1 rounded-md border border-zinc-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-500"
+    />
+    <button
+      type="submit"
+      class="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700"
+    >
+      Send
+    </button>
+  </form>
+
+  <div
+    id="chat-messages"
+    phx-update="stream"
+    class="mt-6 divide-y divide-zinc-200 border-t border-zinc-200 text-sm empty:hidden"
+  >
+    <div :for={{dom_id, message} <- @streams.messages} id={dom_id} class="py-2">
+      <span class="font-mono text-zinc-500">{message.nickname}:</span>
+      <span>{message.body}</span>
+    </div>
+  </div>
+
+  <p :if={@message_count == 0} class="mt-6 text-sm text-zinc-500">
+    No messages yet — send one, then open the share link in another tab and watch it arrive
+    over the other socket.
+  </p>
+</div>

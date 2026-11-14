@@ -11,6 +11,13 @@ defmodule AppWeb.Endpoint do
     same_site: "Lax"
   ]
 
+  # Raw channel socket for the chat demo. `longpoll: false` is intentional:
+  # unlike the LiveView socket below, this one must fail loudly if the
+  # WebSocket upgrade through the Worker/Durable Object ever breaks.
+  socket "/socket", AppWeb.UserSocket,
+    websocket: [connect_info: [:peer_data, :x_headers]],
+    longpoll: false
+
   socket "/live", Phoenix.LiveView.Socket,
     websocket: [connect_info: [session: @session_options]],
     longpoll: [connect_info: [session: @session_options]]

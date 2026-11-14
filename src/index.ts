@@ -18,6 +18,9 @@ export interface Env {
 type TaskRow = Record<string, unknown>;
 
 const TASK_COLUMNS = "id, title, completed, inserted_at, updated_at";
+const MESSAGE_COLUMNS = "id, room, nickname, body, inserted_at";
+const MESSAGE_LIMIT_DEFAULT = 50;
+const MESSAGE_LIMIT_MAX = 200;
 
 /**
  * Private HTTP gateway that lets the container read and write the Worker's
@@ -31,6 +34,8 @@ const TASK_COLUMNS = "id, title, completed, inserted_at, updated_at";
  *   GET    /tasks/:id  -> {task: row} | 404
  *   PATCH  /tasks/:id  -> {task: row}       body: {title?, completed?}
  *   DELETE /tasks/:id  -> {deleted: true} | 404
+ *   GET    /messages?room=&limit= -> {messages: [row]}  (oldest first)
+ *   POST   /messages   -> 201 {message: row}  body: {room, nickname, body}
  *
  * All SQL is parameterized; no user input is ever interpolated into a query.
  */
@@ -45,12 +50,19 @@ export class D1Gateway extends WorkerEntrypoint<Env> {
     const parts = url.pathname.split("/").filter(Boolean);
     const isCollection = parts.length === 1 && parts[0] === "tasks";
     const isItem = parts.length === 2 && parts[0] === "tasks";
+    const isMessages = parts.length === 1 && parts[0] === "messages";
 
-    if (!isCollection && !isItem) {
+    if (!isCollection && !isItem && !isMessages) {
       return Response.json({ error: "not found" }, { status: 404 });
     }
 
     try {
+      if (isMessages) {
+        if (request.method === "GET") return await this.listMessages(db, url);
+        if (request.method === "POST") return await this.createMessage(db, request);
+        return methodNotAllowed();
+      }
+
       if (isCollection) {
         if (request.method === "GET") return await this.listTasks(db);
         if (request.method === "POST") return await this.createTask(db, request);
@@ -70,6 +82,54 @@ export class D1Gateway extends WorkerEntrypoint<Env> {
       console.error("D1Gateway error:", error);
       return Response.json({ error: "database error" }, { status: 500 });
     }
+  }
+
+  private async listMessages(db: D1Database, url: URL): Promise<Response> {
+    const room = (url.searchParams.get("room") ?? "").trim();
+    if (!room) {
+      return Response.json({ error: "room is required" }, { status: 400 });
+    }
+
+    const requested = Number(url.searchParams.get("limit") ?? MESSAGE_LIMIT_DEFAULT);
+    const limit =
+      Number.isInteger(requested) && requested >= 1
+        ? Math.min(requested, MESSAGE_LIMIT_MAX)
+        : MESSAGE_LIMIT_DEFAULT;
+
+    // Take the newest `limit` rows, then flip to chronological order so the
+    // client can append straight into the transcript.
+    const result = await db
+      .prepare(
+        `SELECT ${MESSAGE_COLUMNS} FROM messages WHERE room = ?1 ` +
+          `ORDER BY id DESC LIMIT ?2`,
+      )
+      .bind(room, limit)
+      .all<TaskRow>();
+    return Response.json({ messages: (result.results ?? []).reverse() });
+  }
+
+  private async createMessage(db: D1Database, request: Request): Promise<Response> {
+    const payload = await readJson(request);
+    const room = readText(payload.room, 64);
+    const nickname = readText(payload.nickname, 64);
+    const body = readText(payload.body, 2000);
+
+    if (room === null || nickname === null || body === null) {
+      return Response.json(
+        { error: "room, nickname and body must be non-empty strings within their length limits" },
+        { status: 400 },
+      );
+    }
+
+    const row = await firstRow(
+      db
+        .prepare(
+          `INSERT INTO messages (room, nickname, body) VALUES (?1, ?2, ?3) ` +
+            `RETURNING ${MESSAGE_COLUMNS}`,
+        )
+        .bind(room, nickname, body),
+    );
+    return Response.json({ message: row }, { status: 201 });
   }
 
   private async listTasks(db: D1Database): Promise<Response> {
@@ -174,6 +234,12 @@ function readTitle(body: Record<string, unknown>): string | null {
   if (typeof body.title !== "string") return null;
   const title = body.title.trim();
   return title.length >= 1 && title.length <= 255 ? title : null;
+}
+
+function readText(value: unknown, maxLength: number): string | null {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  return text.length >= 1 && text.length <= maxLength ? text : null;
 }
 
 async function firstRow(statement: D1PreparedStatement): Promise<TaskRow | null> {

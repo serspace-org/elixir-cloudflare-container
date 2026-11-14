@@ -8,13 +8,38 @@ defmodule App.D1 do
   database is never exposed to the public internet and no credentials ship
   in the image.
 
-  Functions return raw row maps; `App.Tasks` converts them into
-  `App.Tasks.Task` structs.
+  Functions return raw row maps; the contexts (`App.Tasks`, `App.Chat`)
+  convert them into structs.
   """
 
   require Logger
 
   @base_url Application.compile_env(:app, :d1_url, "http://d1.internal")
+
+  ## Messages (chat demo)
+
+  @doc """
+  Returns up to `limit` messages for `room`, oldest first.
+  """
+  @spec list_messages(String.t(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
+  def list_messages(room, limit \\ 50) when is_binary(room) and is_integer(limit) do
+    query = URI.encode_query(%{"room" => room, "limit" => limit})
+
+    case request(:get, "/messages?" <> query) do
+      {:ok, %{"messages" => rows}} -> {:ok, rows}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc "Persists a chat message and returns its row."
+  @spec create_message(String.t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def create_message(room, nickname, body)
+      when is_binary(room) and is_binary(nickname) and is_binary(body) do
+    case request(:post, "/messages", %{room: room, nickname: nickname, body: body}) do
+      {:ok, %{"message" => row}} -> {:ok, row}
+      {:error, _reason} = error -> error
+    end
+  end
 
   ## Tasks
 
@@ -69,6 +94,7 @@ defmodule App.D1 do
     options =
       [method: method, url: @base_url <> path, retry: false]
       |> put_json(body)
+      |> Keyword.merge(Application.get_env(:app, :d1_req_options, []))
 
     case Req.request(options) do
       {:ok, %Req.Response{status: status, body: body}}

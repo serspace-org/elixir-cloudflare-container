@@ -1,0 +1,73 @@
+<div class="mx-auto max-w-2xl px-4 py-10">
+  <h1 class="text-2xl font-bold tracking-tight">
+    Channel probe <span class="font-mono text-base font-normal text-zinc-500">{@room}</span>
+  </h1>
+  <p class="mt-1 text-sm text-zinc-500">
+    Plain JavaScript client on <code>/socket</code> — no LiveView involved, and no
+    long-poll fallback. If this page connects, WebSockets survive the Worker and
+    Durable Object hop.
+  </p>
+
+  <div class="mt-6 rounded-lg border border-zinc-200 p-4 text-sm">
+    <p class="text-zinc-500">Share this session</p>
+    <input
+      id="share-url"
+      type="text"
+      readonly
+      value={@probe_url}
+      class="mt-2 w-full rounded-md border border-zinc-300 bg-zinc-50 px-3 py-2 font-mono text-xs"
+    />
+    <p class="mt-2 text-xs text-zinc-500">
+      Anyone opening that link joins this room. The LiveView client for the same room is at <a
+        href={@share_url}
+        class="underline"
+      >{@share_url}</a>.
+    </p>
+  </div>
+
+  <div id="channel-probe" data-room={@room} class="mt-8">
+    <dl class="grid grid-cols-2 gap-x-4 gap-y-2 rounded-lg border border-zinc-200 p-4 text-sm">
+      <dt class="text-zinc-500">Socket state</dt>
+      <dd id="probe-state" class="font-mono">connecting…</dd>
+      <dt class="text-zinc-500">Transport</dt>
+      <dd id="probe-transport" class="font-mono">—</dd>
+      <dt class="text-zinc-500">Nickname</dt>
+      <dd id="probe-nickname" class="font-mono">—</dd>
+      <dt class="text-zinc-500">Round trip</dt>
+      <dd id="probe-rtt" class="font-mono">—</dd>
+      <dt class="text-zinc-500">Reconnects</dt>
+      <dd id="probe-reconnects" class="font-mono">0</dd>
+      <dt class="text-zinc-500">Node uptime</dt>
+      <dd id="probe-uptime" class="font-mono">—</dd>
+      <dt class="text-zinc-500">Persistence</dt>
+      <dd id="probe-durability" class="font-mono">—</dd>
+    </dl>
+
+    <form id="probe-form" class="mt-6 flex gap-2">
+      <input
+        id="probe-input"
+        type="text"
+        name="body"
+        placeholder="Say something"
+        autocomplete="off"
+        required
+        maxlength="2000"
+        class="flex-1 rounded-md border border-zinc-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-500"
+      />
+      <button
+        type="submit"
+        class="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700"
+      >
+        Send
+      </button>
+    </form>
+
+    <ul id="probe-messages" class="mt-6 divide-y divide-zinc-200 border-t border-zinc-200 text-sm">
+    </ul>
+  </div>
+
+  <p class="mt-8 text-sm text-zinc-500">
+    Messages sent here must appear in the LiveView client above, which proves PubSub fan-out
+    between two different socket implementations.
+  </p>
+</div>
