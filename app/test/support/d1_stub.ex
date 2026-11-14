@@ -17,6 +17,43 @@ defmodule App.D1Stub do
   end
 
   @doc """
+  Backs `App.D1` with a real SQLite database for the duration of one test.
+
+  Hand-written stubs are fine for a route or two, but the accounts context
+  leans on SQL the gateway actually has to run — a unique index on
+  `lower(email)`, `RETURNING`, a batched update-and-delete. So instead of
+  faking those, this points the stub at `App.D1.LocalGateway.Router`, the same
+  plug `mix phx.server` talks to, over a throwaway database built from
+  `cloudflare/migrations`. Each test gets its own file, which is what the Ecto
+  sandbox would have given us.
+
+  Usable directly as a setup callback:
+
+      setup :stub_d1_sqlite!
+
+  Only for `async: false` cases: the gateway is a named process, and the stub
+  has to be visible from LiveView and channel processes.
+  """
+  def stub_d1_sqlite!(_context \\ %{}) do
+    # mix test runs from app/, and the migrations live at the repo root.
+    migrations = Path.expand("../cloudflare/migrations", File.cwd!())
+
+    database =
+      Path.join(System.tmp_dir!(), "d1_stub_#{System.unique_integer([:positive])}.sqlite3")
+
+    ExUnit.Callbacks.on_exit(fn -> File.rm_rf!(database) end)
+
+    ExUnit.Callbacks.start_supervised!(
+      {App.D1.LocalGateway, port: 0, database: database, migrations: migrations}
+    )
+
+    opts = App.D1.LocalGateway.Router.init([])
+    stub_d1(fn conn -> App.D1.LocalGateway.Router.call(conn, opts) end)
+
+    :ok
+  end
+
+  @doc """
   Stubs the gateway with an in-memory message store.
 
   Returns the agent pid holding the rows so a test can assert on what was

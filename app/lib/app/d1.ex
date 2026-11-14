@@ -8,13 +8,24 @@ defmodule App.D1 do
   database is never exposed to the public internet and no credentials ship
   in the image.
 
-  Functions return raw row maps; the contexts (`App.Tasks`, `App.Chat`)
-  convert them into structs.
+  Functions return raw row maps; the contexts (`App.Tasks`, `App.Chat`,
+  `App.Accounts`) convert them into structs.
+
+  Arguments, by contrast, are ordinary Elixir values: the two encodings the
+  gateway's wire format needs — raw token bytes as lowercase hex, and
+  `DateTime`s in SQLite's `CURRENT_TIMESTAMP` format — are applied here so
+  callers never have to think about them.
   """
 
   require Logger
 
   @base_url Application.compile_env(:app, :d1_url, "http://d1.internal")
+
+  # Every stored token is 32 bytes: session tokens are that many random bytes,
+  # emailed ones are a SHA-256 digest. Anything else — a mangled cookie, a
+  # hand-typed URL — cannot match a row, so it is answered without a round
+  # trip rather than as a 400 from the gateway.
+  defguardp is_token(value) when is_binary(value) and byte_size(value) == 32
 
   ## Messages (chat demo)
 
@@ -88,6 +99,139 @@ defmodule App.D1 do
     end
   end
 
+  ## Accounts (see App.Accounts)
+
+  @doc "Returns the user row for `email`, matched case-insensitively."
+  @spec get_user_by_email(String.t()) :: {:ok, map()} | {:error, term()}
+  def get_user_by_email(email) when is_binary(email) do
+    query = URI.encode_query(%{"email" => email})
+
+    case request(:get, "/users?" <> query) do
+      {:ok, %{"user" => row}} -> {:ok, row}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc "Returns the user row for `id`."
+  @spec get_user(integer()) :: {:ok, map()} | {:error, term()}
+  def get_user(id) do
+    case request(:get, "/users/#{id}") do
+      {:ok, %{"user" => row}} -> {:ok, row}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Creates a user from `attrs` (`:email`, `:hashed_password`, `:confirmed_at`).
+
+  Returns `{:error, :email_taken}` when the unique index on `lower(email)`
+  rejects the row, which `App.Accounts` turns into a changeset error.
+  """
+  @spec create_user(map()) :: {:ok, map()} | {:error, term()}
+  def create_user(attrs) when is_map(attrs) do
+    case request(:post, "/users", user_params(attrs)) do
+      {:ok, %{"user" => row}} -> {:ok, row}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Updates a user and, in the same transaction, optionally expires their tokens.
+
+  Beyond the user columns, `attrs` accepts `delete_all_tokens: true` or
+  `delete_tokens_context: context`. Returns `{:ok, {user_row, expired_rows}}`;
+  `expired_rows` is empty unless a deletion was requested.
+  """
+  @spec update_user(integer(), map()) :: {:ok, {map(), [map()]}} | {:error, term()}
+  def update_user(id, attrs) when is_map(attrs) do
+    params =
+      attrs
+      |> Map.take([:delete_all_tokens, :delete_tokens_context])
+      |> Map.merge(user_params(attrs))
+
+    case request(:patch, "/users/#{id}", params) do
+      {:ok, %{"user" => row, "expired_tokens" => expired}} -> {:ok, {row, expired}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Persists a token row.
+
+  `attrs` takes `:user_id`, `:token` (raw bytes), `:context`, and optionally
+  `:sent_to` and `:authenticated_at`.
+  """
+  @spec create_user_token(map()) :: {:ok, map()} | {:error, term()}
+  def create_user_token(%{user_id: user_id, token: token, context: context} = attrs) do
+    params = %{
+      user_id: user_id,
+      token: encode_token(token),
+      context: context,
+      sent_to: Map.get(attrs, :sent_to),
+      authenticated_at: encode_timestamp(Map.get(attrs, :authenticated_at))
+    }
+
+    case request(:post, "/user_tokens", params) do
+      {:ok, %{"user_token" => row}} -> {:ok, row}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Returns `{:ok, {token_row, user_row}}` for the token in `context`.
+
+  Expiry is not checked here — the validity windows live in
+  `App.Accounts.UserToken` and are applied by `App.Accounts`.
+  """
+  @spec get_user_token(binary(), String.t()) :: {:ok, {map(), map()}} | {:error, term()}
+  def get_user_token(token, context) when is_token(token) and is_binary(context) do
+    query = URI.encode_query(%{"token" => encode_token(token), "context" => context})
+
+    case request(:get, "/user_tokens?" <> query) do
+      {:ok, %{"user_token" => token_row, "user" => user_row}} -> {:ok, {token_row, user_row}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def get_user_token(_token, _context), do: {:error, :not_found}
+
+  @doc "Deletes the token in `context`, returning how many rows went away."
+  @spec delete_user_token(binary(), String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def delete_user_token(token, context) when is_token(token) and is_binary(context) do
+    query = URI.encode_query(%{"token" => encode_token(token), "context" => context})
+
+    case request(:delete, "/user_tokens?" <> query) do
+      {:ok, %{"deleted" => count}} -> {:ok, count}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  def delete_user_token(_token, _context), do: {:ok, 0}
+
+  @doc "Encodes raw token bytes the way the `users_tokens.token` column stores them."
+  @spec encode_token(binary()) :: String.t()
+  def encode_token(token) when is_binary(token), do: Base.encode16(token, case: :lower)
+
+  @doc "Decodes a `users_tokens.token` value back into raw bytes."
+  @spec decode_token(String.t()) :: binary()
+  def decode_token(hex) when is_binary(hex), do: Base.decode16!(hex, case: :lower)
+
+  defp user_params(attrs) do
+    attrs
+    |> Map.take([:email, :hashed_password, :confirmed_at])
+    |> Map.new(fn
+      {:confirmed_at, value} -> {:confirmed_at, encode_timestamp(value)}
+      {key, value} -> {key, value}
+    end)
+  end
+
+  # SQLite's CURRENT_TIMESTAMP format, which every timestamp column uses.
+  defp encode_timestamp(nil), do: nil
+
+  defp encode_timestamp(%DateTime{} = at) do
+    at |> DateTime.truncate(:second) |> DateTime.to_naive() |> NaiveDateTime.to_string()
+  end
+
   ## Transport
 
   defp request(method, path, body \\ nil) do
@@ -103,6 +247,10 @@ defmodule App.D1 do
 
       {:ok, %Req.Response{status: 404}} ->
         {:error, :not_found}
+
+      # The unique index on lower(users.email); see create_user/1.
+      {:ok, %Req.Response{status: 409}} ->
+        {:error, :email_taken}
 
       {:ok, %Req.Response{status: status}} ->
         Logger.error("D1 gateway returned HTTP #{status} for #{method} #{path}")

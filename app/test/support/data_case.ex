@@ -24,11 +24,15 @@ defmodule App.DataCase do
       import Ecto.Changeset
       import Ecto.Query
       import App.DataCase
+      import App.D1Stub
     end
   end
 
   setup tags do
     App.DataCase.setup_sandbox(tags)
+    # Shared mode so a stub set here is visible from any process the test
+    # drives; see App.D1Stub.
+    Req.Test.set_req_test_from_context(tags)
     :ok
   end
 

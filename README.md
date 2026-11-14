@@ -26,6 +26,7 @@ In local development there is no Worker, so `App.D1.LocalGateway` serves the sam
   - `App.D1` — HTTP client for the Worker's private D1 gateway
   - `App.Tasks` — CRUD context over D1 (`/tasks`)
   - `App.Chat` — chat context over D1, broadcast with `Phoenix.PubSub` (`/chat/:room`, `/probe/:room`)
+  - `App.Accounts` — `mix phx.gen.auth` password authentication, moved off Ecto onto D1
   - `App.D1.LocalGateway` — dev/test stand-in for the Worker's D1 gateway, backed by local SQLite
   - `app/AGENTS.md` — Phoenix/Elixir/LiveView coding rules for everything under `app/`
 - **`src/index.ts`** — Worker + Durable Object: container lifecycle, HTTP/WebSocket proxying, and the `D1Gateway` entrypoint
@@ -40,6 +41,10 @@ In local development there is no Worker, so `App.D1.LocalGateway` serves the sam
 | Route | What it is |
 | --- | --- |
 | `/` | stock Phoenix landing page |
+| `/users/register` | register with an email and a password |
+| `/users/log-in` | log in with a password (or request a magic link, once a mailer is wired) |
+| `/users/log-out` | log out (`DELETE`) |
+| `/users/settings` | change email and password; requires sudo mode |
 | `/tasks` | D1-backed CRUD demo (LiveView) |
 | `/chat`, `/chat/:room` | chat demo on LiveView's `/live` socket |
 | `/probe`, `/probe/:room` | same chat room over a raw `Phoenix.Channel` on `/socket` |
@@ -167,9 +172,56 @@ pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --remote
 
 **Apply a migration before deploying code that depends on it**, and keep migrations additive (new tables/columns) while the previous version is still serving traffic. Wrangler records applied migrations in D1's `d1_migrations` table.
 
-A new table or endpoint touches four places, which have to stay in step: the migration, a route in `D1Gateway` (`src/index.ts`), a client function in `app/lib/app/d1.ex`, and the same route in `App.D1.LocalGateway.Router`. The `tasks` and `messages` tables are both wired this way — copy either. Keep all SQL parameterized (`?1`-style binds).
+A new table or endpoint touches four places, which have to stay in step: the migration, a route in `D1Gateway` (`src/index.ts`), a client function in `app/lib/app/d1.ex`, and the same route in `App.D1.LocalGateway.Router`. The `tasks`, `messages`, `users` and `users_tokens` tables are all wired this way — copy any of them. Keep all SQL parameterized (`?1`-style binds).
 
-Note: D1 is not an Ecto repo. `App.Tasks` and `App.Chat` validate with embedded schemas (`App.Tasks.Task`, `App.Chat.Message`) and persist through `App.D1`; `mix ecto.*` tasks do not apply.
+Note: D1 is not an Ecto repo. `App.Tasks`, `App.Chat` and `App.Accounts` validate with embedded schemas and persist through `App.D1`; `mix ecto.*` tasks do not apply.
+
+## Authentication
+
+Generated with `mix phx.gen.auth Accounts User users --live --hashing-lib bcrypt`, then adapted to this app's data layer. You get the generator's full scope-based stack — `AppWeb.UserAuth` (plug + `on_mount`), session tokens in the database, remember-me cookie, sudo mode, and the `@current_scope` assign — with Cloudflare D1 underneath instead of Postgres.
+
+Register at `/users/register` with an email and a password and you are logged in immediately. **No email is sent**, by design for now: see [Mailer](#mailer-not-wired-yet).
+
+### What changed from the generated code, and why
+
+| Generated | Here |
+| --- | --- |
+| `Repo.*` in `App.Accounts` | calls to the private D1 gateway through `App.D1` |
+| `UserToken.verify_*_query/1` (`Ecto.Query`) | fetch by `{context, token}`, then a `*_valid?/1` check from `App.Accounts.UserToken` |
+| `Repo.transact/1` around update-and-expire-tokens | one D1 `batch`, which is a single implicit transaction (`PATCH /users/:id`) |
+| `unsafe_validate_unique(:email, App.Repo)` | a read through the gateway; the unique index on `lower(users.email)` still decides, and its 409 becomes a changeset error |
+| `citext` email column | `TEXT` plus a unique index on `lower(email)`; lookups bind `lower(?1)` |
+| `bytea` token column, `utc_datetime` timestamps | lowercase hex, and `TEXT` in SQLite's `CURRENT_TIMESTAMP` format |
+| Register by email, first login by magic link | register with email **and** password, logged in straight away, no email sent |
+
+Registration taking a password is the one change with a security consequence, and `mix help phx.gen.auth` spells it out: an attacker can register a victim's address, set a password, and keep access after the victim later confirms by magic link. The prescribed mitigation is implemented — `App.Accounts.login_user_by_magic_link/2` takes the current user and refuses to confirm an unconfirmed, password-holding account unless the requester is already logged in as that user. `AppWeb.UserLive.Confirmation` says so rather than offering a button that would fail.
+
+Accounts therefore stay **unconfirmed** until a mailer exists; nothing in the app gates on `confirmed_at` yet.
+
+### Mailer (not wired yet)
+
+`App.Accounts.UserNotifier` is the generated Swoosh notifier and works in dev — `mix phx.server` then `/dev/mailbox`. In production no adapter is configured, so magic links, email-change confirmations and (once written) password resets go nowhere.
+
+Cloudflare's own Email Service is the natural fit, and it needs no custom Swoosh adapter — it speaks SMTP submission:
+
+```elixir
+# config/runtime.exs, under `if config_env() == :prod do`
+config :app, App.Mailer,
+  adapter: Swoosh.Adapters.SMTP,
+  relay: "smtp.mx.cloudflare.net",
+  port: 465,
+  ssl: true,
+  username: "api_token",
+  password: System.fetch_env!("CLOUDFLARE_EMAIL_API_TOKEN"),
+  auth: :always
+```
+
+That needs `{:gen_smtp, "~> 1.2"}` in `mix.exs` (Swoosh's SMTP adapter dependency), the token as a Worker secret passed into the container, and the sending domain onboarded with `wrangler email sending enable <domain>`. Two constraints to know before committing to it:
+
+- Until a sending domain is onboarded you can only send to **verified destination addresses** in the account, which is useless for real signups. After onboarding, any recipient works.
+- Arbitrary recipients need the **Workers Paid** plan: 3,000 emails/month included, then $0.35 per 1,000. Sends to verified destinations are always free and don't count against the quota.
+
+There is also a REST endpoint (`POST /accounts/{account_id}/email/sending/send`) and a Worker `send_email` binding. The binding is the only option that keeps an API token out of the image entirely — it would ride the same `interceptOutboundHttp` trick as `D1Gateway`, as a `MailGateway` on a `mail.internal` hostname. SMTP is less code; the binding is tighter. Either way, the work left after that is a password-reset flow, which is what lets a victim of the pre-stuffing attack above recover their account.
 
 ## Chat (WebSocket + Channels) demo
 
@@ -234,6 +286,7 @@ The first request may take 5–15 seconds (container cold start). Subsequent req
 ## Notes
 
 - Container instance type is `basic` (1 GiB RAM)
+- Password hashing is bcrypt (Phoenix's default on Unix). The NIF compiles in the existing Alpine build stage; argon2 would be stronger but its default ~128 MB per hash is a poor fit for a `basic` instance
 - Container sleeps after 10 minutes of inactivity (configurable via `INACTIVITY_TIMEOUT_MS` in `src/index.ts`)
 - Disk is **ephemeral** — durable state lives in D1
 - The Worker handles TLS; the container serves plain HTTP behind it
