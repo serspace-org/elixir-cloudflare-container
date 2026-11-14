@@ -177,7 +177,7 @@ export class D1Gateway extends WorkerEntrypoint<Env> {
           `INSERT INTO users (email, hashed_password, confirmed_at) ` +
             `VALUES (?1, ?2, ?3) RETURNING ${USER_COLUMNS}`,
         )
-        .bind(email, hashedPassword, confirmedAt),
+        .bind(email, bindable(hashedPassword), bindable(confirmedAt)),
     );
     return Response.json({ user: row }, { status: 201 });
   }
@@ -291,7 +291,7 @@ export class D1Gateway extends WorkerEntrypoint<Env> {
           `INSERT INTO users_tokens (user_id, token, context, sent_to, authenticated_at) ` +
             `VALUES (?1, ?2, ?3, ?4, ?5) RETURNING ${USER_TOKEN_COLUMNS}`,
         )
-        .bind(userId, token, context, sentTo, authenticatedAt),
+        .bind(userId, token, context, bindable(sentTo), bindable(authenticatedAt)),
     );
     return Response.json({ user_token: row }, { status: 201 });
   }
@@ -508,6 +508,9 @@ function readText(value: unknown, maxLength: number): string | null {
 /**
  * The helpers below all use `null` for "invalid" and `undefined` for "absent",
  * so a caller can tell a rejected value from one that was never sent.
+ *
+ * An absent value must still go through `bindable()` before it reaches
+ * `bind()`; see that function.
  */
 function readOptionalText(value: unknown, maxLength: number): string | null | undefined {
   if (value === undefined || value === null) return undefined;
@@ -532,6 +535,20 @@ function readToken(value: unknown): string | null {
 function readId(value: unknown): number | null {
   const id = Number(value);
   return Number.isInteger(id) && id >= 1 ? id : null;
+}
+
+/**
+ * Turns an absent optional value into a SQL NULL.
+ *
+ * D1 rejects `undefined` outright — `bind()` throws "Type 'undefined' not
+ * supported" rather than treating it as NULL — so every nullable column needs
+ * this on the way in. The local stand-in does not care, because Exqlite binds
+ * `nil` for the same case, which is exactly why the gap reached production:
+ * `tasks` and `messages` have no nullable columns, so nothing bound an absent
+ * value until `users` and `users_tokens` arrived.
+ */
+function bindable<T>(value: T | undefined): T | null {
+  return value === undefined ? null : value;
 }
 
 async function firstRow(statement: D1PreparedStatement): Promise<TaskRow | null> {
