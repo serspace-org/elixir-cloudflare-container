@@ -57,6 +57,24 @@ if Mix.env() != :prod do
       GenServer.call(__MODULE__, {:query, sql, params})
     end
 
+    @doc """
+    Runs `statements` — `{sql, params}` tuples — in one transaction.
+
+    The local counterpart of D1's `db.batch/1`, which is itself a single
+    implicit transaction. Returns `{:ok, [rows_per_statement]}`, or rolls back
+    and returns `{:error, reason}` if any statement fails.
+    """
+    def transaction(statements) when is_list(statements) do
+      GenServer.call(__MODULE__, {:transaction, statements})
+    end
+
+    @doc "True when `reason` is a unique index violation."
+    def unique_violation?(reason) when is_binary(reason) do
+      String.contains?(reason, "UNIQUE constraint failed")
+    end
+
+    def unique_violation?(_reason), do: false
+
     @impl true
     def init(opts) do
       database = Keyword.fetch!(opts, :database)
@@ -73,6 +91,28 @@ if Mix.env() != :prod do
     @impl true
     def handle_call({:query, sql, params}, _from, %{conn: conn} = state) do
       {:reply, run(conn, sql, params), state}
+    end
+
+    def handle_call({:transaction, statements}, _from, %{conn: conn} = state) do
+      :ok = Sqlite3.execute(conn, "BEGIN IMMEDIATE")
+
+      result =
+        Enum.reduce_while(statements, {:ok, []}, fn {sql, params}, {:ok, acc} ->
+          case run(conn, sql, params) do
+            {:ok, rows} -> {:cont, {:ok, [rows | acc]}}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+        end)
+
+      case result do
+        {:ok, results} ->
+          :ok = Sqlite3.execute(conn, "COMMIT")
+          {:reply, {:ok, Enum.reverse(results)}, state}
+
+        {:error, reason} ->
+          :ok = Sqlite3.execute(conn, "ROLLBACK")
+          {:reply, {:error, reason}, state}
+      end
     end
 
     @impl true
@@ -108,14 +148,22 @@ if Mix.env() != :prod do
     ## Query execution
 
     defp run(conn, sql, params) do
-      with {:ok, statement} <- Sqlite3.prepare(conn, sql),
-           :ok <- Sqlite3.bind(statement, params),
-           {:ok, columns} <- Sqlite3.columns(conn, statement),
-           {:ok, rows} <- Sqlite3.fetch_all(conn, statement) do
-        Sqlite3.release(conn, statement)
-        {:ok, Enum.map(rows, &row_map(columns, &1))}
-      else
-        {:error, reason} -> {:error, reason}
+      case Sqlite3.prepare(conn, sql) do
+        {:ok, statement} ->
+          # Released even when the statement fails, so a rollback inside
+          # `transaction/1` is never blocked by a statement left open.
+          try do
+            with :ok <- Sqlite3.bind(statement, params),
+                 {:ok, columns} <- Sqlite3.columns(conn, statement),
+                 {:ok, rows} <- Sqlite3.fetch_all(conn, statement) do
+              {:ok, Enum.map(rows, &row_map(columns, &1))}
+            end
+          after
+            Sqlite3.release(conn, statement)
+          end
+
+        {:error, reason} ->
+          {:error, reason}
       end
     end
 
