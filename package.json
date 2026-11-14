@@ -5,10 +5,11 @@
   "scripts": {
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
-    "ws:smoke": "node scripts/ws-smoke.mjs"
+    "ws:smoke": "node scripts/ws-smoke.mjs",
+    "typecheck": "wrangler types && tsc --noEmit"
   },
   "devDependencies": {
-    "wrangler": "^4.161.0",
-    "@cloudflare/workers-types": "^5.20261113.1"
+    "typescript": "^7.0.2",
+    "wrangler": "^4.161.0"
   }
 }
