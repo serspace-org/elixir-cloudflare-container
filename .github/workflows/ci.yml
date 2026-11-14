@@ -1,0 +1,85 @@
+name: CI
+
+# Nothing validated pull requests before this: `deploy.yml` only runs on
+# pushes to main, so the first time CI saw a change was while shipping it.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A new push supersedes the run already in flight for the same branch.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  elixir:
+    name: Elixir
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The versions the Dockerfile builds with, so a green check here means
+      # the release image compiles too.
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.20"
+          otp-version: "29"
+
+      # Dependency *sources* only — deliberately not `_build`. A cached
+      # `_build` would let `--warnings-as-errors` pass vacuously, because Mix
+      # skips files it considers unchanged and the warning is never re-emitted.
+      # Recompiling from scratch costs a minute or two and keeps the check
+      # meaning what it says.
+      - uses: actions/cache@v4
+        with:
+          path: app/deps
+          key: mix-deps-${{ hashFiles('app/mix.lock') }}
+          restore-keys: mix-deps-
+
+      - run: mix deps.get
+
+      # `mix precommit` is the local equivalent of the four steps below, but it
+      # *rewrites* files: `mix format` and `mix deps.unlock --unused` would
+      # quietly fix a problem here instead of failing on it. These are the
+      # checking variants.
+      - run: mix deps.unlock --check-unused
+      - run: mix format --check-formatted
+      - run: mix compile --warnings-as-errors
+
+      # No database to stand up. The suite reaches a throwaway SQLite file
+      # behind the D1 gateway's HTTP contract (`App.D1Stub`), and the `test`
+      # alias only runs ecto.create/ecto.migrate when DATABASE_URL is set.
+      - run: mix test --warnings-as-errors
+
+  worker:
+    name: Worker
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+
+      # `--frozen-lockfile` also makes a stale pnpm-lock.yaml fail here rather
+      # than resolving to something nobody tested.
+      - run: pnpm install --frozen-lockfile
+
+      # `wrangler deploy` bundles with esbuild, which strips types without
+      # checking them. This is the only thing standing between a type error in
+      # the Worker, the Durable Object or the D1 gateway and production.
+      - run: pnpm typecheck
