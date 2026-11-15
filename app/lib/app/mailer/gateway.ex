@@ -34,13 +34,21 @@ defmodule App.Mailer.Gateway do
          {:ok, to} <- recipient(email),
          {:ok, subject} <- required(email.subject, :subject),
          {:ok, text} <- required(email.text_body, :text_body) do
-      send_message(%{
+      # Absent fields are dropped rather than sent as `null`. JSON has no
+      # `undefined`, so a `null` here is indistinguishable from a value the
+      # caller meant to set, and the gateway has to decide which it is. Not
+      # sending the key removes the question — and the gateway treats `null`
+      # as absent too, so neither half depends on the other getting it right.
+      %{
         to: to,
         subject: subject,
         text: text,
         html: email.html_body,
         reply_to: address(email.reply_to)
-      })
+      }
+      |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+      |> Map.new()
+      |> send_message()
     end
   end
 
