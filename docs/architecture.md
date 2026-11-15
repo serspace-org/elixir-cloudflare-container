@@ -31,7 +31,7 @@ Both are registered with `container.interceptOutboundHttp(...)` in `ElixirContai
 
 Three rules, each of which was learned by shipping a bug:
 
-1. **A new route touches four places in lockstep** — the SQL migration, the route in the Worker gateway, the client function in Elixir, and the same route in `App.D1.LocalGateway.Router` (the dev/test stand-in). Drift between the Worker gateway and the local one makes local runs lie about production.
+1. **A new route touches four places in lockstep** — the migration (authored as an Ecto migration in `app/priv/migration_repo/migrations/` and exported to `cloudflare/migrations/*.sql` with `mix d1.gen_migrations`; a parity test keeps the two expressions of the schema identical), the route in the Worker gateway, the client function in Elixir, and the same route in `App.D1.LocalGateway.Router` (the dev/test stand-in). Drift between the Worker gateway and the local one makes local runs lie about production.
 2. **JSON has no `undefined`, so `null` means "absent".** Elixir sends `null` for a field it has no value for. A gateway reader that treats `null` as *invalid* rejects real messages; use the `readOptional*` helpers. D1 goes further and **throws** on `undefined` in `bind()`, so nullable columns need `bindable()`.
 3. **Never return a rejection without logging it.** A 400 from a gateway is a normal `Response`, so the Worker invocation still reports `outcome: ok` — in `wrangler tail` that is indistinguishable from success. Every rejection path names what was wrong, and every successful send logs its message id.
 

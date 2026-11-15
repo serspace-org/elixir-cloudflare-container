@@ -23,13 +23,19 @@ pnpm exec wrangler deploy
 
 ## Schema changes (D1 migrations)
 
-Migrations are versioned SQL files in `cloudflare/migrations/`, applied with Wrangler:
+Migrations are **authored with the Ecto migration system and exported to SQL**. D1 is SQLite, so the Ecto migrator runs the migration against a scratch SQLite database (via `ecto_sqlite3`, a dev/test-only dep) and the SQL it executes is exported as the versioned file Wrangler applies:
 
 ```bash
-pnpm exec wrangler d1 migrations create phoenix-cf-container-db <name>
-pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --remote
+# 1. Author: add app/priv/migration_repo/migrations/NNNN_snake_name.exs
+#    (next zero-padded version) — an ordinary Ecto migration.
+cd app && mix d1.gen_migrations        # 2. Export cloudflare/migrations/NNNN_snake_name.sql
+mix test                               # 3. The parity test proves both paths build the same schema
+
+pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --remote   # by hand, rarely needed
 just migrate-local      # the same thing against the local D1, by binding name
 ```
+
+Commit the `.exs` and the exported `.sql` together. **Never edit or regenerate a `.sql` that already shipped** — D1 (and the local gateway) track applied migrations by file name, so a changed file is either skipped silently or breaks the deploy; the exporter refuses to overwrite existing files for this reason. `App.D1.MigrationParityTest` fails the suite if the authored migrations and the exported SQL ever disagree. (Don't use `wrangler d1 migrations create` — it would make a `.sql` with no authored source.)
 
 CI applies pending migrations before each deploy (see `.github/workflows/deploy.yml`), so pushing a migration and the code that needs it in the same commit is safe. Run the `--remote` command by hand only when you need the schema live ahead of a deploy. Wrangler records applied migrations in D1's `d1_migrations` table and the command is idempotent, so re-running it is harmless.
 
@@ -37,7 +43,7 @@ CI applies pending migrations before each deploy (see `.github/workflows/deploy.
 
 A new table or endpoint touches four places, which have to stay in step: the migration, a route in `D1Gateway` (`src/index.ts`), a client function in `app/lib/app/d1.ex`, and the same route in `App.D1.LocalGateway.Router`. The `tasks`, `messages`, `users` and `users_tokens` tables are all wired this way — copy any of them. Keep all SQL parameterized (`?1`-style binds).
 
-Note: D1 is not an Ecto repo. `App.Tasks`, `App.Chat` and `App.Accounts` validate with embedded schemas and persist through `App.D1`; `mix ecto.*` tasks do not apply.
+Note: D1 is not an Ecto repo at *runtime* — there is no Ecto adapter for D1. `App.Tasks`, `App.Chat` and `App.Accounts` validate with embedded schemas and persist through `App.D1`; `mix ecto.migrate` never touches D1. Ecto's role is the authoring step above: migrations are written as Ecto migrations and exported to the SQL that Wrangler actually applies.
 
 ## Verifying a deployment
 

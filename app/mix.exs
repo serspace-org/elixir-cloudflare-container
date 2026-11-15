@@ -63,6 +63,9 @@ defmodule App.MixProject do
       {:req, "~> 0.5"},
       # Backs the local D1 stand-in gateway (dev/test only); D1 is SQLite.
       {:exqlite, "~> 0.33", only: [:dev, :test]},
+      # Lets the Ecto migrator run the D1 migrations against SQLite, which is
+      # what mix d1.gen_migrations uses to emit cloudflare/migrations/*.sql.
+      {:ecto_sqlite3, "~> 0.21", only: [:dev, :test]},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
       {:gettext, "~> 1.0"},
