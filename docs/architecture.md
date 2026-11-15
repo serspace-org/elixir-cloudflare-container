@@ -54,14 +54,17 @@ The gateways have no automated tests against the real bindings — see [Known ga
 - **`cloudflare/migrations/`** — SQL migrations applied to D1 with Wrangler
 - **`Dockerfile`** — Multi-stage build: compiles an Elixir release with assets, copies into minimal Alpine runtime
 - **`wrangler.toml`** — Wrangler config (container, Durable Object, D1 and Email Sending bindings)
+- **`justfile`** — the everyday local commands, and the header explaining which of the three local modes to use (`just dev`, `just worker-dev`, `just image-run`)
 - **`scripts/ws-smoke.mjs`** — post-deploy WebSocket/channel smoke test (`pnpm ws:smoke <url>`)
 - **`.github/workflows/deploy.yml`** — CI workflow that deploys on push to `main`
 
 ## Operational facts
 
-- Container instance type is `basic` (1 GiB RAM)
+- Container instance type is `basic` (1/4 vCPU, 1 GiB RAM, 4 GB disk), with internet access enabled. It is set in `container.start()` in `src/index.ts`, **not** `instance_type` in `wrangler.toml` — with `scheduling_policy = "durable_object"` the Durable Object picks the image and size at every start, and omitting it would silently get `lite` (256 MiB), which is not enough for the BEAM plus a bcrypt hash
 - Password hashing is bcrypt (Phoenix's default on Unix). The NIF compiles in the existing Alpine build stage; argon2 would be stronger but its default ~128 MB per hash is a poor fit for a `basic` instance
-- Container sleeps after 10 minutes of inactivity (configurable via `INACTIVITY_TIMEOUT_MS` in `src/index.ts`)
+- Container sleeps after 10 minutes of inactivity (configurable via `INACTIVITY_TIMEOUT_MS` in `src/index.ts`); every request renews the deadline
+- Readiness: the DO polls `GET /health` every 300 ms for up to 100 attempts (~30s) before giving up
+- A proxy failure — a fetch that throws, or a container that never becomes ready — answers **503 with `retry-after: 5`** and logs the exception, rather than letting the throw surface as Cloudflare error 1101
 - Disk is **ephemeral** — durable state lives in D1
 - The Worker handles TLS; the container serves plain HTTP behind it
 - `force_ssl` uses `x-forwarded-proto` and excludes `/health`

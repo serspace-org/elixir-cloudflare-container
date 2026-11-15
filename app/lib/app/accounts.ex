@@ -373,7 +373,8 @@ defmodule App.Accounts do
 
   Guards the two flows that depend on email — magic link login and changing
   an email address — so they neither crash nor claim to have sent something.
-  False in production until a mail provider is configured; see the README.
+  False until the Worker's mail gateway is switched on with `MAIL_FROM`; see
+  `docs/authentication.md`.
 
   The token is deliberately not created when this is false: an unusable magic
   link should not exist in the database at all.

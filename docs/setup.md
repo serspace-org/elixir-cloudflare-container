@@ -12,8 +12,8 @@
 ### 1. Wrangler secrets
 
 ```bash
-npx wrangler secret put SECRET_KEY_BASE   # output of: mix phx.gen.secret
-npx wrangler secret put PHX_HOST           # e.g. phoenix-cf-container.serspace.dev
+pnpm exec wrangler secret put SECRET_KEY_BASE   # output of: mix phx.gen.secret
+pnpm exec wrangler secret put PHX_HOST          # e.g. phoenix-cf-container.serspace.dev
 ```
 
 For local `wrangler dev`, mirror the same values into `.dev.vars` (gitignored).
@@ -29,7 +29,7 @@ pnpm exec wrangler d1 create phoenix-cf-container-db
 Then apply the migrations:
 
 ```bash
-# Test against a local D1 first (optional):
+# Test against a local D1 first (optional); `just migrate-local` is the same thing:
 pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --local
 
 # Apply to production:
@@ -110,7 +110,7 @@ What it cannot do is use the database. The release compiles `http://d1.internal`
 ```bash
 curl localhost:4000/health/sockets            # {"d1_ready":true, ...}
 curl "localhost:4100/messages?room=lobby"     # the gateway itself, if you want to poke it
-rm app/priv/d1_local.sqlite3                  # reset the local database
+just reset-db                                 # reset it (rm app/priv/d1_local.sqlite3)
 ```
 
 History survives a server restart, which is the thing worth checking: send a message, restart, reload, and it should still be there. Migrations are tracked in a `local_migrations` table, so a restart does not re-apply them.
@@ -127,9 +127,10 @@ Because the local gateway binds port 4100, only one dev server can run at a time
 ### Tests
 
 ```bash
-cd app
-mix test          # no Postgres needed
-mix precommit     # compile --warnings-as-errors + deps.unlock --unused + format + test
+just test                  # cd app && mix test — no Postgres needed
+just test test/path_test.exs:42
+just precommit             # compile --warnings-as-errors + deps.unlock --unused + format + test
+just fmt                   # mix format, then `pnpm typecheck` for the Worker
 ```
 
-D1 calls are stubbed with `Req.Test` through `App.D1Stub`, so the suite never reaches the network. `test/app/d1/local_gateway_test.exs` runs the repo's real migration files, which makes it a check on the migrations as well as the gateway.
+D1 calls are stubbed with `Req.Test` through `App.D1Stub`, so the suite never reaches the network. Tests that touch `App.Accounts` use `setup :stub_d1_sqlite!` instead, which points the stub at `App.D1.LocalGateway.Router` over a throwaway SQLite file built from `cloudflare/migrations` — the unique index, `RETURNING` and the batched update-and-delete have to actually run. Channel and LiveView tests must be `async: false`, because the stub is resolved from the channel/LiveView process rather than the test process. `test/app/d1/local_gateway_test.exs` runs the repo's real migration files, which makes it a check on the migrations as well as the gateway.

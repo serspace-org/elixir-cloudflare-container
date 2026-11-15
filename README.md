@@ -38,6 +38,7 @@ Everything the container needs from Cloudflare arrives through a **private gatew
 | `/` | stock Phoenix landing page |
 | `/users/register` | register with an email and a password |
 | `/users/log-in` | log in with a password, or request a magic link when a mailer is configured |
+| `/users/log-in/:token` | magic-link / confirmation link; see [the confirmation order](docs/authentication.md#confirming-an-account) |
 | `/users/log-out` | log out (`DELETE`) |
 | `/users/settings` | change email and password; requires sudo mode |
 | `/tasks` | D1-backed CRUD demo (LiveView); requires a logged-in user, and each user sees only their own tasks |
@@ -45,6 +46,7 @@ Everything the container needs from Cloudflare arrives through a **private gatew
 | `/probe`, `/probe/:room` | same chat room over a raw `Phoenix.Channel` on `/socket` |
 | `/health` | readiness probe used by the Durable Object — unauthenticated, never redirects |
 | `/health/sockets` | socket/node diagnostics as JSON; takes an optional `?room=` |
+| `/dev/dashboard`, `/dev/mailbox` | LiveDashboard and the Swoosh mailbox preview — **dev only** (`:dev_routes`) |
 
 ## Quick start
 
