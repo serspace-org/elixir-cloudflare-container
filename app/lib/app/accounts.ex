@@ -108,6 +108,18 @@ defmodule App.Accounts do
     end
   end
 
+  @doc """
+  Gets a single user, or `nil` — for callers like `AppWeb.UserSocket` that
+  resolve an id arriving from the outside and treat a miss as "no identity",
+  not a crash.
+  """
+  def get_user(id) do
+    case D1.get_user(id) do
+      {:ok, row} -> to_user(row)
+      {:error, _reason} -> nil
+    end
+  end
+
   ## User registration
 
   @doc """

@@ -1,6 +1,7 @@
 defmodule AppWeb.ChatLiveTest do
   use AppWeb.ConnCase
 
+  import App.AccountsFixtures
   import Phoenix.LiveViewTest
 
   alias App.Chat
@@ -131,5 +132,43 @@ defmodule AppWeb.ChatLiveTest do
     {:ok, view, _html} = live(conn, ~p"/chat")
 
     assert has_element?(view, "#chat-durability", "ephemeral")
+  end
+
+  describe "owned rooms" do
+    setup :stub_d1_sqlite!
+
+    test "the owner chats in their private room", %{conn: conn} do
+      %{conn: conn, scope: owner} = register_and_log_in_user(%{conn: conn})
+      {:ok, room} = Chat.create_room(owner)
+
+      {:ok, view, _html} = live(conn, ~p"/chat/#{room.slug}")
+
+      assert has_element?(view, "#share-url[value$='/chat/#{room.slug}']")
+    end
+
+    test "a logged-in stranger is bounced to the default room", %{conn: conn} do
+      {:ok, room} = Chat.create_room(user_scope_fixture())
+      %{conn: conn} = register_and_log_in_user(%{conn: conn})
+
+      assert {:error, {:live_redirect, %{to: "/chat"}}} = live(conn, ~p"/chat/#{room.slug}")
+    end
+
+    test "an anonymous visitor is bounced from a private room", %{conn: conn} do
+      {:ok, room} = Chat.create_room(user_scope_fixture())
+
+      assert {:error, {:live_redirect, %{to: "/chat"}}} = live(conn, ~p"/chat/#{room.slug}")
+    end
+
+    test "a member enters, and is navigated away when revoked", %{conn: conn} do
+      owner = user_scope_fixture()
+      {:ok, room} = Chat.create_room(owner)
+      %{conn: conn, scope: member} = register_and_log_in_user(%{conn: conn})
+      {:ok, _shared} = Chat.share_room(owner, room.slug, member.user.email)
+
+      {:ok, view, _html} = live(conn, ~p"/chat/#{room.slug}")
+
+      {:ok, 1} = Chat.unshare_room(owner, room.slug, member.user.id)
+      assert_redirect(view, "/chat")
+    end
   end
 end

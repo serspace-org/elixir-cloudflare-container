@@ -15,7 +15,10 @@ export function startChannelProbe() {
   if (!root) { return null }
 
   const room = root.dataset.room || "lobby"
-  const socket = new Socket("/socket", {params: {}})
+  // Identity, when logged in — lets the channel join rooms owned by or
+  // shared with this user. Absent for anonymous visitors.
+  const userToken = document.querySelector("meta[name='user-token']")?.content
+  const socket = new Socket("/socket", {params: userToken ? {user_token: userToken} : {}})
   let reconnects = 0
   let opened = false
 
