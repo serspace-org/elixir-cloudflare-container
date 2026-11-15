@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Phoenix 1.8 LiveView app packaged as a Docker container and served on Cloudflare Containers, fronted by a Worker + Durable Object. See `README.md` for setup/deploy prose and `docs/troubleshooting.md` for how to read the Worker's logs, confirm a deploy reached users, and inspect D1 and the mail queue — it also logs the defects this setup has already produced, which is worth skimming before debugging anything here. `app/AGENTS.md` holds the Phoenix/Elixir/LiveView coding rules and applies to everything under `app/` — read it before touching Elixir or HEEx.
+A Phoenix 1.8 LiveView app packaged as a Docker container and served on Cloudflare Containers, fronted by a Worker + Durable Object. `README.md` is the short entry point; the detail lives in `docs/` — `architecture.md` (the gateway pattern and its rules), `setup.md`, `deploy.md`, `authentication.md`, `realtime.md`, and `troubleshooting.md`. Read `docs/troubleshooting.md` before debugging anything here: it covers reading the Worker's logs and inspecting D1 and the mail queue, and logs the defects this setup has already produced. `app/AGENTS.md` holds the Phoenix/Elixir/LiveView coding rules and applies to everything under `app/` — read it before touching Elixir or HEEx.
 
 ## Architecture
 

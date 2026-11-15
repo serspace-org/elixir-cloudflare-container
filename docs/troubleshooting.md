@@ -57,7 +57,8 @@ serving**. The Durable Object does not replace a running container, and every
 request pushes its inactivity deadline another 10 minutes out, so a busy site
 can serve stale code indefinitely. `rollStaleContainer()` in `src/index.ts`
 handles this by comparing the deployed image against the one the DO recorded
-starting, and stopping the container when they differ.
+starting, and stopping the container when they differ — see
+[How a deploy actually reaches users](deploy.md#how-a-deploy-actually-reaches-users).
 
 Two things follow from that:
 
