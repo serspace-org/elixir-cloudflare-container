@@ -170,8 +170,8 @@ from going live. Fixed by `rollStaleContainer()`.
 **Cause** — D1 **throws** on `undefined` in `bind()` rather than treating it as
 NULL, and `confirmed_at` is absent at registration.
 
-**Lesson** — `tasks` and `messages` have no nullable columns, so nothing in the
-original app had ever bound an absent value. The local SQLite stand-in binds
+**Lesson** — `tasks` and `messages` had no nullable columns then, so nothing in
+the original app had ever bound an absent value. The local SQLite stand-in binds
 `nil` happily, so the test suite could not see it. Fixed by `bindable()`.
 
 ### Cloudflare error 1101 on logging in

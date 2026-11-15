@@ -48,7 +48,8 @@ defmodule App.D1.LocalGatewayTest do
     assert Enum.map(applied, & &1["name"]) == [
              "0001_create_tasks.sql",
              "0002_create_messages.sql",
-             "0003_create_users_auth_tables.sql"
+             "0003_create_users_auth_tables.sql",
+             "0004_scope_tasks_to_users.sql"
            ]
   end
 
@@ -84,17 +85,62 @@ defmodule App.D1.LocalGatewayTest do
   end
 
   test "serves the tasks contract too" do
-    assert {201, %{"task" => task}} = request(:post, "/tasks", %{title: "write it down"})
+    # Tasks reference `users (id)`, and SQLite enforces that here as D1 does
+    # remotely, so a task needs a real owner row.
+    owner = create_user("owner@example.com")["id"]
+
+    assert {201, %{"task" => task}} =
+             request(:post, "/tasks", %{user_id: owner, title: "write it down"})
+
     assert task["completed"] == 0
+    assert task["user_id"] == owner
 
     assert {200, %{"task" => updated}} =
-             request(:patch, "/tasks/#{task["id"]}", %{completed: true})
+             request(:patch, "/tasks/#{task["id"]}?user_id=#{owner}", %{completed: true})
 
     assert updated["completed"] == 1
 
-    assert {200, %{"tasks" => [_task]}} = request(:get, "/tasks")
-    assert {200, %{"deleted" => true}} = request(:delete, "/tasks/#{task["id"]}")
-    assert {404, _body} = request(:get, "/tasks/#{task["id"]}")
+    assert {200, %{"tasks" => [_task]}} = request(:get, "/tasks?user_id=#{owner}")
+
+    assert {200, %{"deleted" => true}} =
+             request(:delete, "/tasks/#{task["id"]}?user_id=#{owner}")
+
+    assert {404, _body} = request(:get, "/tasks/#{task["id"]}?user_id=#{owner}")
+  end
+
+  test "scopes every task route to its user_id" do
+    mine_id = create_user("mine@example.com")["id"]
+    theirs_id = create_user("theirs@example.com")["id"]
+
+    assert {201, %{"task" => mine}} =
+             request(:post, "/tasks", %{user_id: mine_id, title: "mine"})
+
+    assert {201, _body} = request(:post, "/tasks", %{user_id: theirs_id, title: "theirs"})
+
+    assert {200, %{"tasks" => [task]}} = request(:get, "/tasks?user_id=#{mine_id}")
+    assert task["title"] == "mine"
+
+    # Another user's task is a 404, not a leak — and not writable either.
+    path = "/tasks/#{mine["id"]}?user_id=#{theirs_id}"
+    assert {404, _body} = request(:get, path)
+    assert {404, _body} = request(:patch, path, %{title: "stolen"})
+    assert {404, _body} = request(:delete, path)
+
+    assert {200, %{"task" => unchanged}} =
+             request(:get, "/tasks/#{mine["id"]}?user_id=#{mine_id}")
+
+    assert unchanged["title"] == "mine"
+  end
+
+  test "requires a user_id on every task route" do
+    assert {400, %{"error" => "user_id is required"}} = request(:get, "/tasks")
+
+    assert {400, %{"error" => "user_id is required"}} =
+             request(:post, "/tasks", %{title: "unowned"})
+
+    assert {400, %{"error" => "user_id is required"}} = request(:get, "/tasks/1")
+    assert {400, %{"error" => "user_id is required"}} = request(:patch, "/tasks/1", %{})
+    assert {400, %{"error" => "user_id is required"}} = request(:delete, "/tasks/1")
   end
 
   test "404s an unknown path" do

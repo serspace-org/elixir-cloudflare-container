@@ -12,7 +12,7 @@ if Mix.env() != :prod do
 
     alias App.D1.LocalGateway
 
-    @task_columns "id, title, completed, inserted_at, updated_at"
+    @task_columns "id, user_id, title, completed, inserted_at, updated_at"
     @message_columns "id, room, nickname, body, inserted_at"
     @message_limit_default 50
     @message_limit_max 200
@@ -215,27 +215,41 @@ if Mix.env() != :prod do
     ## Tasks
 
     get "/tasks" do
-      {:ok, rows} =
-        LocalGateway.query(
-          "SELECT #{@task_columns} FROM tasks ORDER BY inserted_at DESC, id DESC",
-          []
-        )
+      case parse_id(conn.params["user_id"]) do
+        nil ->
+          send_json(conn, 400, %{error: "user_id is required"})
 
-      send_json(conn, 200, %{tasks: rows})
+        user_id ->
+          {:ok, rows} =
+            LocalGateway.query(
+              "SELECT #{@task_columns} FROM tasks WHERE user_id = ?1 " <>
+                "ORDER BY inserted_at DESC, id DESC",
+              [user_id]
+            )
+
+          send_json(conn, 200, %{tasks: rows})
+      end
     end
 
     post "/tasks" do
-      case to_text(conn.params["title"], 255) do
-        nil ->
+      title = to_text(conn.params["title"], 255)
+      user_id = parse_id(conn.params["user_id"])
+
+      cond do
+        is_nil(title) ->
           send_json(conn, 400, %{
             error: "title must be a non-empty string of at most 255 characters"
           })
 
-        title ->
+        is_nil(user_id) ->
+          send_json(conn, 400, %{error: "user_id is required"})
+
+        true ->
           {:ok, [row]} =
             LocalGateway.query(
-              "INSERT INTO tasks (title, completed) VALUES (?1, 0) RETURNING #{@task_columns}",
-              [title]
+              "INSERT INTO tasks (user_id, title, completed) VALUES (?1, ?2, 0) " <>
+                "RETURNING #{@task_columns}",
+              [user_id, title]
             )
 
           send_json(conn, 201, %{task: row})
@@ -268,8 +282,8 @@ if Mix.env() != :prod do
           {:ok, [row]} =
             LocalGateway.query(
               "UPDATE tasks SET title = ?1, completed = ?2, updated_at = CURRENT_TIMESTAMP " <>
-                "WHERE id = ?3 RETURNING #{@task_columns}",
-              [title, if(completed, do: 1, else: 0), current["id"]]
+                "WHERE id = ?3 AND user_id = ?4 RETURNING #{@task_columns}",
+              [title, if(completed, do: 1, else: 0), current["id"], current["user_id"]]
             )
 
           send_json(conn, 200, %{task: row})
@@ -278,16 +292,15 @@ if Mix.env() != :prod do
     end
 
     delete "/tasks/:id" do
-      case parse_id(id) do
-        nil ->
-          send_json(conn, 400, %{error: "invalid task id"})
-
-        task_id ->
-          case LocalGateway.query("DELETE FROM tasks WHERE id = ?1 RETURNING id", [task_id]) do
-            {:ok, [_row]} -> send_json(conn, 200, %{deleted: true})
-            {:ok, []} -> send_json(conn, 404, %{error: "not found"})
-          end
-      end
+      with_task_id(conn, id, fn task_id, user_id ->
+        case LocalGateway.query(
+               "DELETE FROM tasks WHERE id = ?1 AND user_id = ?2 RETURNING id",
+               [task_id, user_id]
+             ) do
+          {:ok, [_row]} -> send_json(conn, 200, %{deleted: true})
+          {:ok, []} -> send_json(conn, 404, %{error: "not found"})
+        end
+      end)
     end
 
     match _ do
@@ -375,15 +388,25 @@ if Mix.env() != :prod do
     end
 
     defp with_task(conn, id, fun) do
-      case parse_id(id) do
-        nil ->
-          send_json(conn, 400, %{error: "invalid task id"})
+      with_task_id(conn, id, fn task_id, user_id ->
+        case LocalGateway.query(
+               "SELECT #{@task_columns} FROM tasks WHERE id = ?1 AND user_id = ?2",
+               [task_id, user_id]
+             ) do
+          {:ok, [row]} -> fun.(row)
+          {:ok, []} -> send_json(conn, 404, %{error: "not found"})
+        end
+      end)
+    end
 
-        task_id ->
-          case LocalGateway.query("SELECT #{@task_columns} FROM tasks WHERE id = ?1", [task_id]) do
-            {:ok, [row]} -> fun.(row)
-            {:ok, []} -> send_json(conn, 404, %{error: "not found"})
-          end
+    # Tasks are owned, so the owner is part of addressing one: `user_id` is
+    # required on every single-task route and bound alongside the id in every
+    # statement, which turns another user's task into a 404 rather than a leak.
+    defp with_task_id(conn, id, fun) do
+      case {parse_id(id), parse_id(conn.params["user_id"])} do
+        {nil, _user_id} -> send_json(conn, 400, %{error: "invalid task id"})
+        {_task_id, nil} -> send_json(conn, 400, %{error: "user_id is required"})
+        {task_id, user_id} -> fun.(task_id, user_id)
       end
     end
 

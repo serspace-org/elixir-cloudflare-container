@@ -1,6 +1,10 @@
 defmodule AppWeb.TaskLive do
   @moduledoc """
   Task CRUD LiveView backed by Cloudflare D1 (see `App.Tasks`).
+
+  Mounted in the `:require_authenticated_user` live session, so
+  `@current_scope.user` is always present; every context call is scoped to it
+  and only ever sees that user's tasks.
   """
 
   use AppWeb, :live_view
@@ -16,7 +20,7 @@ defmodule AppWeb.TaskLive do
   end
 
   def handle_event("create", %{"title" => title}, socket) do
-    case Tasks.create_task(%{title: title}) do
+    case Tasks.create_task(socket.assigns.current_scope, %{title: title}) do
       {:ok, task} ->
         {:noreply, assign(socket, tasks: [task | socket.assigns.tasks])}
 
@@ -44,7 +48,7 @@ defmodule AppWeb.TaskLive do
         {:noreply, assign(socket, editing_task_id: nil)}
 
       task ->
-        case Tasks.update_task(task, %{title: title}) do
+        case Tasks.update_task(socket.assigns.current_scope, task, %{title: title}) do
           {:ok, updated} ->
             {:noreply,
              socket
@@ -66,7 +70,7 @@ defmodule AppWeb.TaskLive do
         {:noreply, socket}
 
       task ->
-        case Tasks.toggle_task(task) do
+        case Tasks.toggle_task(socket.assigns.current_scope, task) do
           {:ok, updated} ->
             {:noreply, replace_task(socket, updated)}
 
@@ -82,7 +86,7 @@ defmodule AppWeb.TaskLive do
         {:noreply, socket}
 
       task ->
-        case Tasks.delete_task(task) do
+        case Tasks.delete_task(socket.assigns.current_scope, task) do
           {:ok, deleted} ->
             {:noreply,
              update(socket, :tasks, fn tasks ->
@@ -98,7 +102,7 @@ defmodule AppWeb.TaskLive do
   ## Helpers
 
   defp load_tasks(socket) do
-    case Tasks.list_tasks() do
+    case Tasks.list_tasks(socket.assigns.current_scope) do
       {:ok, tasks} ->
         assign(socket, tasks: tasks, d1_ready: true)
 

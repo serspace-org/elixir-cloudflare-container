@@ -54,50 +54,60 @@ defmodule App.D1 do
 
   ## Tasks
 
-  @doc "Returns all task rows, newest first."
-  @spec list_tasks() :: {:ok, [map()]} | {:error, term()}
-  def list_tasks do
-    case request(:get, "/tasks") do
+  # Tasks are owned, and ownership is enforced in SQL rather than here: the
+  # gateway binds `user_id` alongside the id in every task statement, so a
+  # task belonging to someone else answers 404 — which `App.Tasks` sees as
+  # `{:error, :not_found}`, the same as a task that never existed.
+
+  @doc "Returns `user_id`'s task rows, newest first."
+  @spec list_tasks(integer()) :: {:ok, [map()]} | {:error, term()}
+  def list_tasks(user_id) when is_integer(user_id) do
+    query = URI.encode_query(%{"user_id" => user_id})
+
+    case request(:get, "/tasks?" <> query) do
       {:ok, %{"tasks" => rows}} -> {:ok, rows}
       {:error, _reason} = error -> error
     end
   end
 
-  @doc "Creates a task and returns its row."
-  @spec create_task(String.t()) :: {:ok, map()} | {:error, term()}
-  def create_task(title) when is_binary(title) do
-    case request(:post, "/tasks", %{title: title}) do
+  @doc "Creates a task owned by `user_id` and returns its row."
+  @spec create_task(integer(), String.t()) :: {:ok, map()} | {:error, term()}
+  def create_task(user_id, title) when is_integer(user_id) and is_binary(title) do
+    case request(:post, "/tasks", %{user_id: user_id, title: title}) do
       {:ok, %{"task" => row}} -> {:ok, row}
       {:error, _reason} = error -> error
     end
   end
 
-  @doc "Returns the task row for `id`, or `{:error, :not_found}`."
-  @spec get_task(integer() | String.t()) :: {:ok, map()} | {:error, term()}
-  def get_task(id) do
-    case request(:get, "/tasks/#{id}") do
+  @doc "Returns `user_id`'s task row for `id`, or `{:error, :not_found}`."
+  @spec get_task(integer(), integer() | String.t()) :: {:ok, map()} | {:error, term()}
+  def get_task(user_id, id) when is_integer(user_id) do
+    case request(:get, "/tasks/#{id}?" <> task_scope(user_id)) do
       {:ok, %{"task" => row}} -> {:ok, row}
       {:error, _reason} = error -> error
     end
   end
 
-  @doc "Updates a task and returns its row."
-  @spec update_task(integer() | String.t(), map()) :: {:ok, map()} | {:error, term()}
-  def update_task(id, attrs) when is_map(attrs) do
-    case request(:patch, "/tasks/#{id}", attrs) do
+  @doc "Updates `user_id`'s task and returns its row."
+  @spec update_task(integer(), integer() | String.t(), map()) ::
+          {:ok, map()} | {:error, term()}
+  def update_task(user_id, id, attrs) when is_integer(user_id) and is_map(attrs) do
+    case request(:patch, "/tasks/#{id}?" <> task_scope(user_id), attrs) do
       {:ok, %{"task" => row}} -> {:ok, row}
       {:error, _reason} = error -> error
     end
   end
 
-  @doc "Deletes the task with `id`."
-  @spec delete_task(integer() | String.t()) :: :ok | {:error, term()}
-  def delete_task(id) do
-    case request(:delete, "/tasks/#{id}") do
+  @doc "Deletes `user_id`'s task with `id`."
+  @spec delete_task(integer(), integer() | String.t()) :: :ok | {:error, term()}
+  def delete_task(user_id, id) when is_integer(user_id) do
+    case request(:delete, "/tasks/#{id}?" <> task_scope(user_id)) do
       {:ok, _body} -> :ok
       {:error, _reason} = error -> error
     end
   end
+
+  defp task_scope(user_id), do: URI.encode_query(%{"user_id" => user_id})
 
   ## Accounts (see App.Accounts)
 

@@ -14,6 +14,9 @@ defmodule App.Tasks.Task do
   # primary key without it.
   @primary_key {:id, :integer, []}
   embedded_schema do
+    # Set by the gateway from the scope's user, never cast from attrs: see
+    # `App.Tasks`, which matches it against the caller's scope.
+    field :user_id, :integer
     field :title, :string
     field :completed, :boolean, default: false
     field :inserted_at, :naive_datetime

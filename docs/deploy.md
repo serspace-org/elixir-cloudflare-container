@@ -46,6 +46,6 @@ curl https://<your-host>/health
 # ok
 ```
 
-Then open `/tasks` for the D1-backed CRUD demo and `/chat` for the WebSocket demo.
+Then register at `/users/register` and open `/tasks` for the D1-backed CRUD demo — tasks belong to the user who created them — and `/chat` for the WebSocket demo, which needs no account.
 
 The first request may take 5–15 seconds (container cold start). Subsequent requests are instant while the container is warm.
