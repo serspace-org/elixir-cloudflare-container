@@ -134,7 +134,7 @@ defmodule App.Accounts do
       {:ok, to_user(row)}
     else
       {:error, %Changeset{} = changeset} -> {:error, changeset}
-      {:error, :email_taken} -> {:error, email_taken_error(changeset)}
+      {:error, :conflict} -> {:error, email_taken_error(changeset)}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -427,7 +427,7 @@ defmodule App.Accounts do
   defp update_user_and_expire_all_tokens(%User{} = user, attrs) do
     case D1.update_user(user.id, Map.put(attrs, :delete_all_tokens, true)) do
       {:ok, {row, expired}} -> {:ok, {to_user(row), Enum.map(expired, &to_user_token/1)}}
-      {:error, :email_taken} -> {:error, email_taken_error(User.email_changeset(user, %{}))}
+      {:error, :conflict} -> {:error, email_taken_error(User.email_changeset(user, %{}))}
       {:error, _reason} = error -> error
     end
   end
