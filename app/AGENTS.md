@@ -5,6 +5,16 @@ This is a web application written using the Phoenix web framework.
 - Use `mix precommit` alias when you are done with all changes and fix any pending issues
 - Use the already included and available `:req` (`Req`) library for HTTP requests, **avoid** `:httpoison`, `:tesla`, and `:httpc`. Req is included by default and is the preferred HTTP client for Phoenix apps
 
+### This app's data layer
+
+Read this before the Ecto guidelines below, which are generic and only apply to changesets here. The root `CLAUDE.md` has the full picture.
+
+- **There is no Repo.** Data lives in Cloudflare D1, reached over HTTP through the Worker's private gateway (`App.D1`, `App.Mailer.Gateway`). Schemas (`App.Tasks.Task`, `App.Chat.Message`, `App.Accounts.User`, `App.Accounts.UserToken`) are `embedded_schema`s used for casting and validation only: build a changeset, apply it with `Ecto.Changeset.apply_action/2`, then persist through `App.D1`. Never add an `Ecto.Query` or a `Repo.*` call to a context. `App.Repo` exists but is only supervised when `DATABASE_URL` is set.
+- **Migrations are SQL files in `cloudflare/migrations/`**, applied by Wrangler (CI applies them before each deploy). `mix ecto.gen.migration` and `mix ecto.migrate` do not apply. Keep migrations additive — the previous version keeps serving traffic during a deploy.
+- **A new table or endpoint touches four places in lockstep**: the migration, a route in `D1Gateway` (`src/index.ts`), a client function in `app/lib/app/d1.ex`, and the same route in `App.D1.LocalGateway.Router`. Drift between the Worker gateway and the local stand-in makes local runs lie about production.
+- **Owned data is filtered by owner in SQL, at the gateway.** `App.Tasks` takes an `App.Accounts.Scope` as its first argument and *matches* it (`%Scope{user: %{id: user_id}}`) rather than reading an id out of it, so a scope with no user raises instead of reaching for someone else's rows; the gateway binds that `user_id` into every statement, so another user's row is a `{:error, :not_found}`. Copy that shape for any new owned table, and never let a context function take a bare user id.
+- **Tests**: D1 is stubbed with `Req.Test` via `App.D1Stub`. Anything touching `App.Accounts` needs `setup :stub_d1_sqlite!` (real SQLite built from `cloudflare/migrations`), and channel and LiveView tests must be `async: false`, because the request is made from the channel/LiveView process rather than the test process.
+
 ### Phoenix v1.8 guidelines
 
 - **Always** begin your LiveView templates with `<Layouts.app flash={@flash} ...>` which wraps all inner content
@@ -105,11 +115,12 @@ Controllers automatically have the `current_scope` available if they use the `:b
 
 ### This app's deviations from the generated auth
 
-- There is **no Repo**. `App.Accounts` persists through `App.D1` (the private Cloudflare D1 gateway); `App.Accounts.User` and `App.Accounts.UserToken` are `embedded_schema`s used for casting, validation and hashing only. Never add an `Ecto.Query` or a `Repo.*` call to the Accounts context.
+- There is **no Repo**. `App.Accounts` persists through `App.D1` (the private Cloudflare D1 gateway); `App.Accounts.User` and `App.Accounts.UserToken` are `embedded_schema`s used for casting, validation and hashing only. Never add an `Ecto.Query` or a `Repo.*` call to the Accounts context. See [This app's data layer](#this-apps-data-layer).
 - Registration takes a password and sends no email, so accounts stay unconfirmed. `App.Accounts.login_user_by_magic_link/2` takes the current user and refuses to confirm an unconfirmed account that has a password unless the requester is already logged in as that user — this is the credential pre-stuffing mitigation from `mix help phx.gen.auth`, not an optional check.
 - Tests that touch `App.Accounts` need `setup :stub_d1_sqlite!` and must be `async: false`.
+- `/tasks` sits in the `live_session :require_authenticated_user` block because tasks are owned data: the plug redirects the initial request and the `on_mount` hook redirects the socket, which is what guarantees `@current_scope.user` in `AppWeb.TaskLive`.
 
-See the root `CLAUDE.md` and the README's Authentication section for the full picture.
+See the root `CLAUDE.md` and `docs/authentication.md` for the full picture.
 
 <!-- phoenix-gen-auth-end -->
 

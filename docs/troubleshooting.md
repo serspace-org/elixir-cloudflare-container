@@ -13,6 +13,7 @@ cheaper.
 
 ```bash
 # What the Worker is doing, live. The single most useful command in the repo.
+# `just tail` is the same thing.
 pnpm exec wrangler tail phoenix-cf-container --format json
 
 # Node identity, BEAM uptime, and whether the D1 gateway answers.
@@ -26,6 +27,11 @@ pnpm exec wrangler d1 execute DB --remote --json \
 `wrangler tail` is **live only** — there is no historical query. If something
 already happened and you have no log, you have to reproduce it. Driving the app
 yourself (below) is usually faster than asking a human to click again.
+
+A request that the Worker could not proxy answers **503 with `retry-after: 5`**,
+not Cloudflare's 1101 page, and logs `Container request failed:` with the
+exception. A 503 therefore means the container never became ready or the proxy
+fetch threw — both of which are in `wrangler tail`.
 
 ## Reading the Worker's logs
 

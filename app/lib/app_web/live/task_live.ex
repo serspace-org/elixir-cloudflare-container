@@ -129,7 +129,7 @@ defmodule AppWeb.TaskLive do
 
   defp d1_error_message(action) do
     "Could not #{action} task: the D1 database is not configured or unreachable. " <>
-      "See the database setup section in the README."
+      "See the database section of docs/setup.md."
   end
 
   defp changeset_message(changeset) do

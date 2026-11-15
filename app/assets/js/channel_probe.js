@@ -76,7 +76,7 @@ export function startChannelProbe() {
 
   // Latency and liveness probe. It also keeps the socket busy, which is how
   // we check that the Durable Object's inactivity timeout counts WebSocket
-  // traffic as activity — see README.
+  // traffic as activity — see docs/realtime.md.
   setInterval(() => {
     if (channel.state !== "joined") { return }
     const sent = Date.now()

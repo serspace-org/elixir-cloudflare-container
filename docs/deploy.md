@@ -15,8 +15,8 @@ So the DO records the image it started in its own storage and compares it on eac
 ## Locally
 
 ```bash
-npm install
-npx wrangler deploy
+pnpm install
+pnpm exec wrangler deploy
 ```
 
 **Note:** On Apple Silicon Macs, the Docker build uses QEMU emulation which crashes the BEAM VM when compiling Phoenix dependencies. Use CI (`ubuntu-latest` = native AMD64) instead. Local deploy works on Intel Macs and Linux.
@@ -28,6 +28,7 @@ Migrations are versioned SQL files in `cloudflare/migrations/`, applied with Wra
 ```bash
 pnpm exec wrangler d1 migrations create phoenix-cf-container-db <name>
 pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --remote
+just migrate-local      # the same thing against the local D1, by binding name
 ```
 
 CI applies pending migrations before each deploy (see `.github/workflows/deploy.yml`), so pushing a migration and the code that needs it in the same commit is safe. Run the `--remote` command by hand only when you need the schema live ahead of a deploy. Wrangler records applied migrations in D1's `d1_migrations` table and the command is idempotent, so re-running it is harmless.
@@ -46,6 +47,6 @@ curl https://<your-host>/health
 # ok
 ```
 
-Then register at `/users/register` and open `/tasks` for the D1-backed CRUD demo — tasks belong to the user who created them — and `/chat` for the WebSocket demo, which needs no account.
+`just smoke https://<your-host>` runs the scripted checks — WebSocket handshake, channel join, broadcast round trip, and the form-POST redirect. Then register at `/users/register` and open `/tasks` for the D1-backed CRUD demo — tasks belong to the user who created them — and `/chat` for the WebSocket demo, which needs no account.
 
 The first request may take 5–15 seconds (container cold start). Subsequent requests are instant while the container is warm.
