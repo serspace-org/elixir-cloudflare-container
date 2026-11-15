@@ -21,7 +21,6 @@ defmodule AppWeb.Router do
     pipe_through :browser
 
     get "/", PageController, :home
-    live "/tasks", TaskLive, :index
     live "/chat", ChatLive, :index
     live "/chat/:room", ChatLive, :index
 
@@ -63,6 +62,13 @@ defmodule AppWeb.Router do
 
     live_session :require_authenticated_user,
       on_mount: [{AppWeb.UserAuth, :require_authenticated}] do
+      # Tasks are owned by a user (see `App.Tasks`), so `/tasks` lives behind
+      # the `:require_authenticated_user` plug and live session: the plug
+      # redirects the initial request to the log-in page and the `on_mount`
+      # hook does the same for the socket, which is what guarantees
+      # `@current_scope.user` in `AppWeb.TaskLive`.
+      live "/tasks", TaskLive, :index
+
       live "/users/settings", UserLive.Settings, :edit
       live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email
     end

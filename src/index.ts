@@ -30,7 +30,7 @@ export interface Env {
 
 type TaskRow = Record<string, unknown>;
 
-const TASK_COLUMNS = "id, title, completed, inserted_at, updated_at";
+const TASK_COLUMNS = "id, user_id, title, completed, inserted_at, updated_at";
 const MESSAGE_COLUMNS = "id, room, nickname, body, inserted_at";
 const MESSAGE_LIMIT_DEFAULT = 50;
 const MESSAGE_LIMIT_MAX = 200;
@@ -52,11 +52,11 @@ const CONTEXT_MAX_LENGTH = 100;
  * intercept registered in `startAndWait()` below.
  *
  * Routes:
- *   GET    /tasks      -> {tasks: [row]}
- *   POST   /tasks      -> 201 {task: row}   body: {title}
- *   GET    /tasks/:id  -> {task: row} | 404
- *   PATCH  /tasks/:id  -> {task: row}       body: {title?, completed?}
- *   DELETE /tasks/:id  -> {deleted: true} | 404
+ *   GET    /tasks?user_id=     -> {tasks: [row]}
+ *   POST   /tasks              -> 201 {task: row}   body: {user_id, title}
+ *   GET    /tasks/:id?user_id= -> {task: row} | 404
+ *   PATCH  /tasks/:id?user_id= -> {task: row}       body: {title?, completed?}
+ *   DELETE /tasks/:id?user_id= -> {deleted: true} | 404
  *   GET    /messages?room=&limit= -> {messages: [row]}  (oldest first)
  *   POST   /messages   -> 201 {message: row}  body: {room, nickname, body}
  *   GET    /users?email=  -> {user: row} | 404   (email matched case-insensitively)
@@ -123,7 +123,7 @@ export class D1Gateway extends WorkerEntrypoint<Env> {
       }
 
       if (isCollection && collection === "tasks") {
-        if (request.method === "GET") return await this.listTasks(db);
+        if (request.method === "GET") return await this.listTasks(db, url);
         if (request.method === "POST") return await this.createTask(db, request);
         return methodNotAllowed();
       }
@@ -134,9 +134,18 @@ export class D1Gateway extends WorkerEntrypoint<Env> {
           return Response.json({ error: "invalid task id" }, { status: 400 });
         }
 
-        if (request.method === "GET") return await this.getTask(db, id);
-        if (request.method === "PATCH") return await this.updateTask(db, id, request);
-        if (request.method === "DELETE") return await this.deleteTask(db, id);
+        // Tasks are owned, so the owner is part of addressing one: every
+        // statement below filters on `user_id` as well as `id`, which turns
+        // another user's task into a 404 rather than a leak.
+        const userId = readId(url.searchParams.get("user_id"));
+        if (userId === null) {
+          return Response.json({ error: "user_id is required" }, { status: 400 });
+        }
+
+        if (request.method === "GET") return await this.getTask(db, id, userId);
+        if (request.method === "PATCH")
+          return await this.updateTask(db, id, userId, request);
+        if (request.method === "DELETE") return await this.deleteTask(db, id, userId);
         return methodNotAllowed();
       }
 
@@ -391,9 +400,18 @@ export class D1Gateway extends WorkerEntrypoint<Env> {
     return Response.json({ message: row }, { status: 201 });
   }
 
-  private async listTasks(db: D1Database): Promise<Response> {
+  private async listTasks(db: D1Database, url: URL): Promise<Response> {
+    const userId = readId(url.searchParams.get("user_id"));
+    if (userId === null) {
+      return Response.json({ error: "user_id is required" }, { status: 400 });
+    }
+
     const result = await db
-      .prepare(`SELECT ${TASK_COLUMNS} FROM tasks ORDER BY inserted_at DESC, id DESC`)
+      .prepare(
+        `SELECT ${TASK_COLUMNS} FROM tasks WHERE user_id = ?1 ` +
+          `ORDER BY inserted_at DESC, id DESC`,
+      )
+      .bind(userId)
       .all<TaskRow>();
     return Response.json({ tasks: result.results });
   }
@@ -408,17 +426,27 @@ export class D1Gateway extends WorkerEntrypoint<Env> {
       );
     }
 
+    const userId = readId(body.user_id);
+    if (userId === null) {
+      return Response.json({ error: "user_id is required" }, { status: 400 });
+    }
+
     const row = await firstRow(
       db
-        .prepare(`INSERT INTO tasks (title, completed) VALUES (?1, 0) RETURNING ${TASK_COLUMNS}`)
-        .bind(title),
+        .prepare(
+          `INSERT INTO tasks (user_id, title, completed) VALUES (?1, ?2, 0) ` +
+            `RETURNING ${TASK_COLUMNS}`,
+        )
+        .bind(userId, title),
     );
     return Response.json({ task: row }, { status: 201 });
   }
 
-  private async getTask(db: D1Database, id: number): Promise<Response> {
+  private async getTask(db: D1Database, id: number, userId: number): Promise<Response> {
     const row = await firstRow(
-      db.prepare(`SELECT ${TASK_COLUMNS} FROM tasks WHERE id = ?1`).bind(id),
+      db
+        .prepare(`SELECT ${TASK_COLUMNS} FROM tasks WHERE id = ?1 AND user_id = ?2`)
+        .bind(id, userId),
     );
     return row
       ? Response.json({ task: row })
@@ -428,11 +456,14 @@ export class D1Gateway extends WorkerEntrypoint<Env> {
   private async updateTask(
     db: D1Database,
     id: number,
+    userId: number,
     request: Request,
   ): Promise<Response> {
     const body = await readJson(request);
     const current = await firstRow(
-      db.prepare(`SELECT ${TASK_COLUMNS} FROM tasks WHERE id = ?1`).bind(id),
+      db
+        .prepare(`SELECT ${TASK_COLUMNS} FROM tasks WHERE id = ?1 AND user_id = ?2`)
+        .bind(id, userId),
     );
     if (!current) {
       return Response.json({ error: "not found" }, { status: 404 });
@@ -459,16 +490,18 @@ export class D1Gateway extends WorkerEntrypoint<Env> {
       db
         .prepare(
           `UPDATE tasks SET title = ?1, completed = ?2, updated_at = CURRENT_TIMESTAMP ` +
-            `WHERE id = ?3 RETURNING ${TASK_COLUMNS}`,
+            `WHERE id = ?3 AND user_id = ?4 RETURNING ${TASK_COLUMNS}`,
         )
-        .bind(title, completed ? 1 : 0, id),
+        .bind(title, completed ? 1 : 0, id, userId),
     );
     return Response.json({ task: row });
   }
 
-  private async deleteTask(db: D1Database, id: number): Promise<Response> {
+  private async deleteTask(db: D1Database, id: number, userId: number): Promise<Response> {
     const row = await firstRow(
-      db.prepare("DELETE FROM tasks WHERE id = ?1 RETURNING id").bind(id),
+      db
+        .prepare("DELETE FROM tasks WHERE id = ?1 AND user_id = ?2 RETURNING id")
+        .bind(id, userId),
     );
     return row
       ? Response.json({ deleted: true })

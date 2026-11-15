@@ -1,6 +1,16 @@
 <div class="mx-auto max-w-2xl px-4 py-10">
   <h1 class="text-2xl font-bold tracking-tight">Tasks</h1>
-  <p class="mt-1 text-sm text-zinc-500">CRUD demo persisted in Cloudflare D1.</p>
+  <p class="mt-1 text-sm text-zinc-500">
+    CRUD demo persisted in Cloudflare D1. These tasks are yours alone.
+  </p>
+  <p class="mt-1 text-sm text-zinc-500">
+    Signed in as {@current_scope.user.email} &middot;
+    <.link href={~p"/users/settings"} class="underline hover:text-zinc-900">Settings</.link>
+    &middot;
+    <.link href={~p"/users/log-out"} method="delete" class="underline hover:text-zinc-900">
+      Log out
+    </.link>
+  </p>
 
   <%= unless @d1_ready do %>
     <div class="mt-8 rounded-lg border border-yellow-300 bg-yellow-50 p-4 text-sm text-yellow-800">

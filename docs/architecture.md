@@ -35,13 +35,15 @@ Three rules, each of which was learned by shipping a bug:
 2. **JSON has no `undefined`, so `null` means "absent".** Elixir sends `null` for a field it has no value for. A gateway reader that treats `null` as *invalid* rejects real messages; use the `readOptional*` helpers. D1 goes further and **throws** on `undefined` in `bind()`, so nullable columns need `bindable()`.
 3. **Never return a rejection without logging it.** A 400 from a gateway is a normal `Response`, so the Worker invocation still reports `outcome: ok` — in `wrangler tail` that is indistinguishable from success. Every rejection path names what was wrong, and every successful send logs its message id.
 
+A fourth rule applies to any table a user owns: **the gateway filters by owner, in SQL, on every statement.** `tasks` is the one so far. Each task route takes a `user_id` and binds it alongside the id, so a task belonging to someone else answers 404 — the gateway is the only authorization boundary the container has, and a `WHERE` clause left off one statement is a cross-account leak. The Elixir side matches an `App.Accounts.Scope` rather than reading a user id out of it (`App.Tasks`), so a scope with no user raises instead of quietly listing everything.
+
 The gateways have no automated tests against the real bindings — see [Known gaps](../README.md#known-gaps).
 
 ## What's in the repo
 
 - **`app/`** — Phoenix 1.8.5 app (LiveView, Ecto, Bandit, Swoosh, Tailwind, esbuild)
   - `App.D1` — HTTP client for the Worker's private D1 gateway
-  - `App.Tasks` — CRUD context over D1 (`/tasks`)
+  - `App.Tasks` — CRUD context over D1, scoped per user (`/tasks`)
   - `App.Chat` — chat context over D1, broadcast with `Phoenix.PubSub` (`/chat/:room`, `/probe/:room`)
   - `App.Accounts` — `mix phx.gen.auth` password authentication, moved off Ecto onto D1
   - `App.Mailer.Gateway` — Swoosh adapter that sends through the Worker's private mail gateway
