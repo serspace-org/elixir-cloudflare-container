@@ -234,6 +234,15 @@ defmodule AppWeb.UserAuth do
     Enum.each(tokens, fn %{token: token} ->
       AppWeb.Endpoint.broadcast(user_session_topic(token), "disconnect", %{})
     end)
+
+    # The broadcasts above are per session token; channel sockets are
+    # identified per user (see UserSocket.id/1), so one broadcast per
+    # distinct user covers them. Without this, changing a password would
+    # leave an open /probe channel authorized.
+    tokens
+    |> Enum.map(& &1.user_id)
+    |> Enum.uniq()
+    |> Enum.each(&AppWeb.Endpoint.broadcast(user_socket_topic(&1), "disconnect", %{}))
   end
 
   defp user_session_topic(token), do: "users_sessions:#{Base.url_encode64(token)}"
