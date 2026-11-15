@@ -210,6 +210,32 @@ if Mix.env() != :prod do
       end
     end
 
+    # Who a room is shared with, owner-only — membership is the owner's to
+    # see and manage, so anyone else (member included) gets the same 404 a
+    # stranger does.
+    get "/room_memberships" do
+      with {:ok, slug} <- require_text(conn.params["room_slug"], 64),
+           owner_id when not is_nil(owner_id) <- parse_id(conn.params["owner_id"]) do
+        case query("SELECT id FROM rooms WHERE slug = ?1 AND user_id = ?2", [slug, owner_id]) do
+          {:ok, [room]} ->
+            {:ok, rows} =
+              query(
+                "SELECT rm.id, rm.user_id, u.email, rm.inserted_at " <>
+                  "FROM room_memberships rm JOIN users u ON u.id = rm.user_id " <>
+                  "WHERE rm.room_id = ?1 ORDER BY rm.id",
+                [room["id"]]
+              )
+
+            send_json(conn, 200, %{memberships: rows})
+
+          {:ok, []} ->
+            send_json(conn, 404, %{error: "not found"})
+        end
+      else
+        _other -> send_json(conn, 400, %{error: "room_slug and owner_id are required"})
+      end
+    end
+
     post "/room_memberships" do
       with {:ok, slug} <- require_text(conn.params["room_slug"], 64),
            owner_id when not is_nil(owner_id) <- parse_id(conn.params["owner_id"]),

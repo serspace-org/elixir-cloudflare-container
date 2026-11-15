@@ -72,6 +72,7 @@ const CONTEXT_MAX_LENGTH = 100;
  *                                  body: {name?, visibility?}
  *   DELETE /rooms/:slug?user_id= -> {deleted: true} | 404  owner only; takes
  *                                  the room's messages with it in one batch
+ *   GET    /room_memberships?room_slug=&owner_id= -> {memberships: [row + email]} | 404
  *   POST   /room_memberships    -> 201 {membership: row} | 404 | 409
  *                                  body: {room_slug, owner_id, user_id}
  *   DELETE /room_memberships?room_slug=&user_id=&actor_id= -> {deleted: count}
@@ -164,6 +165,7 @@ export class D1Gateway extends WorkerEntrypoint<Env> {
       }
 
       if (isCollection && collection === "room_memberships") {
+        if (request.method === "GET") return await this.listRoomMemberships(db, url);
         if (request.method === "POST") return await this.createRoomMembership(db, request);
         if (request.method === "DELETE") return await this.deleteRoomMembership(db, url);
         return methodNotAllowed();
@@ -635,6 +637,34 @@ export class D1Gateway extends WorkerEntrypoint<Env> {
     ]);
     const deleted = results[1]?.results?.length ?? 0;
     return deleted > 0 ? Response.json({ deleted: true }) : notFound();
+  }
+
+  /**
+   * Who a room is shared with, owner-only — membership is the owner's to
+   * see and manage, so anyone else (member included) gets the same 404 a
+   * stranger does.
+   */
+  private async listRoomMemberships(db: D1Database, url: URL): Promise<Response> {
+    const slug = readText(url.searchParams.get("room_slug"), 64);
+    const ownerId = readId(url.searchParams.get("owner_id"));
+    if (slug === null || ownerId === null) {
+      return Response.json({ error: "room_slug and owner_id are required" }, { status: 400 });
+    }
+
+    const room = await firstRow(
+      db.prepare("SELECT id FROM rooms WHERE slug = ?1 AND user_id = ?2").bind(slug, ownerId),
+    );
+    if (!room) return notFound();
+
+    const result = await db
+      .prepare(
+        `SELECT rm.id, rm.user_id, u.email, rm.inserted_at ` +
+          `FROM room_memberships rm JOIN users u ON u.id = rm.user_id ` +
+          `WHERE rm.room_id = ?1 ORDER BY rm.id`,
+      )
+      .bind(room.id)
+      .all<TaskRow>();
+    return Response.json({ memberships: result.results });
   }
 
   private async createRoomMembership(db: D1Database, request: Request): Promise<Response> {

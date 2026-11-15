@@ -490,6 +490,29 @@ defmodule App.D1.LocalGatewayTest do
       assert {200, %{"messages" => [_message]}} = request(:get, "/messages?room=standup")
     end
 
+    test "listing memberships is the owner's view alone" do
+      owner = create_user("owner@example.com")
+      member = create_user("member@example.com")
+      create_room(owner)
+
+      assert {201, _body} =
+               request(:post, "/room_memberships", %{
+                 room_slug: "standup",
+                 owner_id: owner["id"],
+                 user_id: member["id"]
+               })
+
+      assert {200, %{"memberships" => [row]}} =
+               request(:get, "/room_memberships?room_slug=standup&owner_id=#{owner["id"]}")
+
+      assert row["user_id"] == member["id"]
+      assert row["email"] == "member@example.com"
+
+      # A member (or anyone else) gets the 404 a stranger would.
+      assert {404, _body} =
+               request(:get, "/room_memberships?room_slug=standup&owner_id=#{member["id"]}")
+    end
+
     test "revoking a member and leaving a room" do
       owner = create_user("owner@example.com")
       member = create_user("member@example.com")
