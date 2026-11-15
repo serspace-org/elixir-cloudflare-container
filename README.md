@@ -208,32 +208,37 @@ Registration taking a password is the one change with a security consequence, an
 
 Accounts therefore stay **unconfirmed** until a mailer exists; nothing in the app gates on `confirmed_at` yet.
 
-### Mailer (not wired yet)
+### Mailer
 
-`App.Accounts.UserNotifier` is the generated Swoosh notifier and works in dev — `mix phx.server` then `/dev/mailbox`. In production there is no provider, and the generated code assumed one: the configured adapter is `Swoosh.Adapters.Local`, while `config/prod.exs` sets `config :swoosh, local: false`, which stops Swoosh from starting the Local adapter's storage process. Delivering then exits with `:noproc` — a 500, not a silent no-op.
+Account email goes through a **private mail gateway in the Worker**, the same arrangement the database uses: the container POSTs to `http://mail.internal/send`, a hostname that resolves only inside it, and `MailGateway` (`src/index.ts`) does the sending with Cloudflare Email Service via the Worker's `EMAIL` binding.
 
-`UserNotifier.delivery_configured?/0` therefore gates every send, surfaced as `App.Accounts.email_delivery_available?/0`. While it is false, the two flows that need email say so instead of failing: `/users/log-in` offers only the password form, and `/users/settings` only the password section. No magic-link token is written either — an unusable link should not exist in the database. Configure an adapter and both open up on their own, no code change.
+The point is that **no API token exists in the container image**. An Email Sending token is account-wide — it can send from every onboarded domain you have — so putting one in the container environment would mean that code execution anywhere in the Elixir app, including in a dependency, becomes the ability to send mail as your domain. Here the capability stays in the Worker isolate and the container only gets to ask.
 
-Cloudflare's own Email Service is the natural fit, and it needs no custom Swoosh adapter — it speaks SMTP submission:
+Asking is still a capability, so the gateway narrows it: the sender is pinned to `MAIL_FROM` and whatever the caller sends for `from` is ignored, there is exactly one recipient per request, and cc, bcc, attachments and custom headers are refused outright. `App.Mailer.Gateway` refuses the same things on the Elixir side rather than dropping them silently, because an account email that half-arrives is worse than one that visibly fails.
 
-```elixir
-# config/runtime.exs, under `if config_env() == :prod do`
-config :app, App.Mailer,
-  adapter: Swoosh.Adapters.SMTP,
-  relay: "smtp.mx.cloudflare.net",
-  port: 465,
-  ssl: true,
-  username: "api_token",
-  password: System.fetch_env!("CLOUDFLARE_EMAIL_API_TOKEN"),
-  auth: :always
+Sending from the Worker also keeps it off the critical path: every request to this app funnels through one Durable Object and one `basic` container, and an SMTP handshake per message would block a LiveView process on the one fractional vCPU everything else shares.
+
+#### Turning it on
+
+```bash
+pnpm exec wrangler email sending enable mail.example.com   # a subdomain, not the root
+pnpm exec wrangler email sending dns mail.example.com      # SPF/DKIM/DMARC records
+pnpm exec wrangler secret put MAIL_FROM                    # e.g. auth@mail.example.com
 ```
 
-That needs `{:gen_smtp, "~> 1.2"}` in `mix.exs` (Swoosh's SMTP adapter dependency), the token as a Worker secret passed into the container, and the sending domain onboarded with `wrangler email sending enable <domain>`. Two constraints to know before committing to it:
+A subdomain rather than the root domain keeps this app's sending reputation separate from your main mail. Note that **until a sending domain is onboarded you can only send to verified destination addresses** in the account, which is no use for real signups; after onboarding, any recipient works. Arbitrary recipients need Workers Paid (which Containers already requires): 3,000 messages a month included, then $0.35 per 1,000. Sends to verified destinations are always free.
 
-- Until a sending domain is onboarded you can only send to **verified destination addresses** in the account, which is useless for real signups. After onboarding, any recipient works.
-- Arbitrary recipients need the **Workers Paid** plan: 3,000 emails/month included, then $0.35 per 1,000. Sends to verified destinations are always free and don't count against the quota.
+`MAIL_FROM` is the switch for the whole path. Until it is set, the binding goes unused, the `mail.internal` intercept is never registered, `App.Mailer` stays on the Local adapter, and `App.Accounts.email_delivery_available?/0` keeps the mail-dependent flows hidden. Setting it reverses all of that with no code change — the magic-link form returns to `/users/log-in` and the email-change form to `/users/settings`.
 
-There is also a REST endpoint (`POST /accounts/{account_id}/email/sending/send`) and a Worker `send_email` binding. The binding is the only option that keeps an API token out of the image entirely — it would ride the same `interceptOutboundHttp` trick as `D1Gateway`, as a `MailGateway` on a `mail.internal` hostname. SMTP is less code; the binding is tighter. Either way, the work left after that is a password-reset flow, which is what lets a victim of the pre-stuffing attack above recover their account.
+Once the domain is onboarded, pin the sender at the platform level too by adding `allowed_sender_addresses = ["auth@mail.example.com"]` to the `[[send_email]]` binding in `wrangler.toml`. That moves the sender restriction out of gateway code and into Cloudflare's enforcement.
+
+Development keeps `Swoosh.Adapters.Local` and the `/dev/mailbox` preview — better to work with, and the only option without a Worker.
+
+Email Sending is in **open beta**. Treat delivery as best-effort: password login stays the primary path, which is why registration does not depend on email at all.
+
+#### Still missing: password reset
+
+The flow that matters once email works. It is what lets someone recover their account when an attacker registered their address first and set a password — the credential pre-stuffing case the registration design obliges us to cover (see Authentication above). Nothing else is blocked on the mailer.
 
 ## Chat (WebSocket + Channels) demo
 

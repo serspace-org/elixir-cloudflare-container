@@ -27,6 +27,11 @@ config :app, AppWeb.Endpoint,
 # see AppWeb.ChannelCase.
 config :app, :d1_req_options, plug: {Req.Test, App.D1}
 
+# Same for App.Mailer.Gateway, so its tests never reach mail.internal. The
+# mailer itself stays on Swoosh.Adapters.Test; this only applies to the tests
+# that exercise the adapter directly.
+config :app, :mail_req_options, plug: {Req.Test, App.Mailer.Gateway}
+
 # In test we don't send emails
 config :app, App.Mailer, adapter: Swoosh.Adapters.Test
 

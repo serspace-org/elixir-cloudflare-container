@@ -3,9 +3,13 @@ import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 const PORT = 4000;
 const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes (allows WebSocket keepalive)
 
-// Virtual hostname the container uses to reach the D1 gateway below.
-// Resolves only inside the container, via the outbound HTTP intercept.
+// Virtual hostnames the container uses to reach the gateways below. They
+// resolve only inside the container, via outbound HTTP intercepts.
 const D1_HOSTNAME = "d1.internal";
+const MAIL_HOSTNAME = "mail.internal";
+
+const SUBJECT_MAX_LENGTH = 998;
+const TEXT_BODY_MAX_LENGTH = 100_000;
 
 // Durable Object storage key holding the image of the container this instance
 // last started. See rollStaleContainer().
@@ -17,6 +21,11 @@ export interface Env {
   DATABASE_URL?: string;
   PHX_HOST: string;
   DB?: D1Database;
+  EMAIL?: SendEmail;
+  // The one address every account email is sent from. Doubles as the switch
+  // for the whole mail path: unset, and neither gateway nor container will
+  // send anything. Not a secret — it is printed in every message.
+  MAIL_FROM?: string;
 }
 
 type TaskRow = Record<string, unknown>;
@@ -532,6 +541,13 @@ function readToken(value: unknown): string | null {
   return value;
 }
 
+/** A single email address: no display name, no comma-separated lists. */
+function readAddress(value: unknown): string | null {
+  const address = readText(value, EMAIL_MAX_LENGTH);
+  if (address === null) return null;
+  return /^[^@,;\s<>]+@[^@,;\s<>]+$/.test(address) ? address : null;
+}
+
 function readId(value: unknown): number | null {
   const id = Number(value);
   return Number.isInteger(id) && id >= 1 ? id : null;
@@ -554,6 +570,75 @@ function bindable<T>(value: T | undefined): T | null {
 async function firstRow(statement: D1PreparedStatement): Promise<TaskRow | null> {
   const result = await statement.run<TaskRow>();
   return result.results?.[0] ?? null;
+}
+
+/**
+ * Private HTTP gateway that lets the container send account email through the
+ * Worker's `EMAIL` Send Email binding, without the container ever holding a
+ * credential.
+ *
+ * The same shape as `D1Gateway`: reachable only inside the container, via the
+ * `mail.internal` outbound intercept registered in `startAndWait()`. An API
+ * token would have had to live in the container's environment, where any
+ * process in it — or anything that achieves code execution in a dependency —
+ * could read it, and an Email Sending token is account-wide. Here the
+ * capability stays in the Worker isolate and the container only gets to ask.
+ *
+ * Asking is still a capability, so this narrows it:
+ *
+ *   * The sender is pinned to `MAIL_FROM` and whatever the caller sends for
+ *     `from` is ignored, so a compromised container cannot send as anyone
+ *     else on the domain.
+ *   * Exactly one recipient per request. No cc, no bcc, no attachments, no
+ *     arbitrary headers.
+ *   * Sizes are capped.
+ *
+ * Harden it further once the sending domain is onboarded by adding
+ * `allowed_sender_addresses = ["<MAIL_FROM>"]` to the binding in
+ * wrangler.toml, which moves the sender pin from this code into the platform.
+ *
+ * Routes:
+ *   POST /send -> 202 {message_id} | 400 | 502 | 503
+ *                 body: {to, subject, text, html?, reply_to?}
+ */
+export class MailGateway extends WorkerEntrypoint<Env> {
+  async fetch(request: Request): Promise<Response> {
+    const email = this.env.EMAIL;
+    const from = this.env.MAIL_FROM;
+    if (!email || !from) {
+      return Response.json({ error: "email sending not configured" }, { status: 503 });
+    }
+
+    const url = new URL(request.url);
+    if (url.pathname !== "/send") {
+      return Response.json({ error: "not found" }, { status: 404 });
+    }
+    if (request.method !== "POST") {
+      return methodNotAllowed();
+    }
+
+    const payload = await readJson(request);
+    const to = readAddress(payload.to);
+    const subject = readText(payload.subject, SUBJECT_MAX_LENGTH);
+    const text = readText(payload.text, TEXT_BODY_MAX_LENGTH);
+    const html = readOptionalText(payload.html, TEXT_BODY_MAX_LENGTH);
+    const replyTo = payload.reply_to === undefined ? undefined : readAddress(payload.reply_to);
+
+    if (to === null || subject === null || text === null || html === null || replyTo === null) {
+      return Response.json({ error: "invalid message" }, { status: 400 });
+    }
+
+    try {
+      // `from` is this gateway's, never the caller's.
+      const result = await email.send({ from, to, subject, text, html, replyTo });
+      return Response.json({ message_id: result.messageId }, { status: 202 });
+    } catch (error) {
+      // A rejected send must not look like a delivered one. The caller decides
+      // what to tell the user; see App.Mailer.Gateway.
+      console.error("MailGateway send failed:", error);
+      return Response.json({ error: "send failed" }, { status: 502 });
+    }
+  }
 }
 
 export class ElixirContainer extends DurableObject<Env> {
@@ -610,6 +695,10 @@ export class ElixirContainer extends DurableObject<Env> {
     if (this.env.DATABASE_URL) {
       env.DATABASE_URL = this.env.DATABASE_URL;
     }
+    // Switches App.Mailer over to the gateway; see config/runtime.exs.
+    if (this.env.MAIL_FROM) {
+      env.MAIL_FROM = this.env.MAIL_FROM;
+    }
     return env;
   }
 
@@ -664,6 +753,13 @@ export class ElixirContainer extends DurableObject<Env> {
         await container.interceptOutboundHttp(
           D1_HOSTNAME,
           this.ctx.exports.D1Gateway({ props: {} }),
+        );
+      }
+      if (this.env.EMAIL && this.env.MAIL_FROM) {
+        // Private mail gateway for the container (see MailGateway above).
+        await container.interceptOutboundHttp(
+          MAIL_HOSTNAME,
+          this.ctx.exports.MailGateway({ props: {} }),
         );
       }
       container.start({

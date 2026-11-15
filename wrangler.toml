@@ -40,3 +40,22 @@ binding = "DB"
 database_name = "phoenix-cf-container-db"
 database_id = "af1cbfce-87d4-4a3c-ab2d-60a49db70ece"
 migrations_dir = "cloudflare/migrations"
+# Cloudflare Email Service binding, used by MailGateway (src/index.ts) to send
+# account email on the container's behalf. The container never holds a
+# credential — it POSTs to http://mail.internal/send and the Worker does the
+# sending, the same arrangement the D1 binding uses above.
+#
+# Before this can deliver anything:
+#   1. pnpm exec wrangler email sending enable mail.<your-domain>
+#   2. Add the DNS records it asks for (pnpm exec wrangler email sending dns)
+#   3. pnpm exec wrangler secret put MAIL_FROM   # e.g. auth@mail.<your-domain>
+#
+# MAIL_FROM is the switch for the whole path: until it is set, the binding goes
+# unused, the intercept is never registered, and Phoenix keeps the mail-
+# dependent flows hidden. Once the domain is onboarded, pin the sender at the
+# platform level too by adding:
+#
+#   allowed_sender_addresses = ["auth@mail.<your-domain>"]
+#
+[[send_email]]
+name = "EMAIL"
