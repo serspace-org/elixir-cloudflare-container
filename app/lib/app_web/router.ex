@@ -67,6 +67,10 @@ defmodule AppWeb.Router do
       # `@current_scope.user` in `AppWeb.TaskLive`.
       live "/tasks", TaskLive, :index
 
+      # Owned and shared chat rooms. Chat itself (/chat) stays open to
+      # anonymous visitors; only *managing* rooms needs an account.
+      live "/rooms", RoomLive, :index
+
       live "/users/settings", UserLive.Settings, :edit
       live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email
     end
