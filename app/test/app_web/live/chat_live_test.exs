@@ -40,7 +40,7 @@ defmodule AppWeb.ChatLiveTest do
 
       view |> element("#chat-form") |> render_submit(%{"body" => "hello from liveview"})
 
-      assert {:ok, [message]} = Chat.recent_messages("lobby")
+      assert {:ok, [message]} = Chat.recent_messages(scope, "lobby")
       assert message.user_id == scope.user.id
       assert message.nickname == Chat.sender_name(scope)
       assert render(view) =~ "hello from liveview"
