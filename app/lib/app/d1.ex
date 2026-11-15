@@ -134,7 +134,7 @@ defmodule App.D1 do
   @doc """
   Creates a user from `attrs` (`:email`, `:hashed_password`, `:confirmed_at`).
 
-  Returns `{:error, :email_taken}` when the unique index on `lower(email)`
+  Returns `{:error, :conflict}` when the unique index on `lower(email)`
   rejects the row, which `App.Accounts` turns into a changeset error.
   """
   @spec create_user(map()) :: {:ok, map()} | {:error, term()}
@@ -258,9 +258,12 @@ defmodule App.D1 do
       {:ok, %Req.Response{status: 404}} ->
         {:error, :not_found}
 
-      # The unique index on lower(users.email); see create_user/1.
+      # A unique index rejected the write. Which index depends on the route —
+      # lower(users.email) on the user routes, for instance — so callers that
+      # can say something more specific (App.Accounts and its changeset error
+      # on :email) do the translating.
       {:ok, %Req.Response{status: 409}} ->
-        {:error, :email_taken}
+        {:error, :conflict}
 
       {:ok, %Req.Response{status: status}} ->
         Logger.error("D1 gateway returned HTTP #{status} for #{method} #{path}")
