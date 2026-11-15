@@ -62,24 +62,48 @@ In your GitHub repo settings, add:
 
 Optionally add a repo **variable** `SMOKE_URL` (the deployed hostname) to run the smoke test after each deploy. Without it, that CI step is skipped — which also means the form-redirect regression check in `scripts/ws-smoke.mjs` never runs, so setting it is worth the minute.
 
-## Local development
+## Running it locally
 
-Run the Phoenix app directly for everything except the Worker itself:
+Three local modes exist, and they are good at different things. Picking the wrong one costs an afternoon, so the [`justfile`](../justfile) names them and its header spells out the tradeoffs:
+
+| Command | What runs | Database | Use it for |
+| --- | --- | --- | --- |
+| `just dev` | Phoenix natively | **Yes** — `App.D1.LocalGateway` on SQLite | app work; the fastest loop |
+| `just worker-dev` | `wrangler dev`: the real Worker, DO and `d1.internal`/`mail.internal` intercepts | Yes — local D1 | anything in `src/index.ts`, because it is the only local mode that exercises the gateways |
+| `just image-run` | the production release image | **No** | checking the image builds and boots — the thing that breaks on Apple Silicon |
+
+`just --list` shows everything; `brew install just` if you do not have it.
+
+### Native (no Docker)
+
+```bash
+just setup     # deps.get + assets.setup + assets.build
+just dev       # http://localhost:4000
+just iex       # the same, with an IEx shell attached
+just test
+```
+
+`just setup` deliberately skips `mix setup`, which includes `ecto.setup` and wants Postgres on localhost. The app persists through D1, not Postgres, and `App.Repo` is only supervised when `DATABASE_URL` is set — so the Ecto step is vestigial. The equivalent by hand:
 
 ```bash
 cd app
-mix setup          # NOTE: includes ecto.setup, which needs Postgres on localhost
-mix phx.server     # http://localhost:4000
-```
-
-The app persists through D1, not Postgres, so `App.Repo` is only supervised when `DATABASE_URL` is set. If you don't have Postgres, skip the vestigial Ecto step:
-
-```bash
 mix deps.get && mix assets.setup && mix assets.build
 mix phx.server
 ```
 
-### Local persistence (no Docker)
+### The production image
+
+```bash
+just image-build            # a few minutes; builds for your own architecture
+just image-run              # http://localhost:4000
+just image-health           # curl /health
+```
+
+Building for **your own** architecture is the point: it is the `linux/amd64` cross-build under QEMU that crashes the BEAM, so an arm64 build on an Apple Silicon Mac works fine and is a genuine check that the release compiles, the assets build, and the bcrypt NIF loads.
+
+What it cannot do is use the database. The release compiles `http://d1.internal` in (`Application.compile_env`), and nothing serves that hostname outside a Worker, so `/health/sockets` reports `d1_ready: false`, `/tasks` shows a setup notice, `/chat` runs ephemeral, and **registering an account fails**. Every page still returns 200. For the full stack locally, use `just dev` or `just worker-dev`.
+
+### How local persistence works
 
 `mix phx.server` has real persistence. `App.D1.LocalGateway` (compiled in dev/test only) serves the same HTTP contract as the Worker's `D1Gateway` from a local SQLite file on port 4100, applying the very same `cloudflare/migrations/*.sql` on boot. D1 *is* SQLite, so the SQL and the migrations exercised locally are the real ones — a broken migration fails here first.
 

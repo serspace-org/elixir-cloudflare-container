@@ -16,7 +16,7 @@ The Worker starts the container on first request, polls `/health` until it's rea
 
 Everything the container needs from Cloudflare arrives through a **private gateway** rather than a credential. Phoenix makes plain HTTP calls to a hostname that resolves only inside the container, the Worker intercepts it, and a `WorkerEntrypoint` serves it using a binding. Nothing is exposed publicly and **no API tokens or database credentials ship in the image**. See [The gateway pattern](#the-gateway-pattern).
 
-In local development there is no Worker, so `App.D1.LocalGateway` serves the same HTTP contract from a local SQLite file. See [Local development](setup.md#local-development).
+In local development there is no Worker, so `App.D1.LocalGateway` serves the same HTTP contract from a local SQLite file. See [Running it locally](setup.md#running-it-locally).
 
 ## The gateway pattern
 
