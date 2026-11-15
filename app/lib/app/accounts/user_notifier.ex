@@ -41,7 +41,7 @@ defmodule App.Accounts.UserNotifier do
     email =
       new()
       |> to(recipient)
-      |> from({"App", "contact@example.com"})
+      |> from(Application.get_env(:app, :mail_from, {"App", "contact@example.com"}))
       |> subject(subject)
       |> text_body(body)
 

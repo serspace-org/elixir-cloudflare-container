@@ -53,6 +53,16 @@ if config_env() == :prod do
 
   config :app, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
+  # Account email goes through the Worker's private mail gateway (MailGateway
+  # in src/index.ts), so no API token exists in this image. MAIL_FROM is a
+  # Worker secret passed in at container.start(); until it is set the mailer
+  # stays unconfigured and App.Accounts hides the flows that need it, rather
+  # than failing when they are used.
+  if mail_from = System.get_env("MAIL_FROM") do
+    config :app, App.Mailer, adapter: App.Mailer.Gateway
+    config :app, :mail_from, {"App", mail_from}
+  end
+
   config :app, AppWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
     http: [
