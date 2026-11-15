@@ -31,9 +31,13 @@ export interface Env {
 type TaskRow = Record<string, unknown>;
 
 const TASK_COLUMNS = "id, user_id, title, completed, inserted_at, updated_at";
-const MESSAGE_COLUMNS = "id, room, nickname, body, inserted_at";
+const MESSAGE_COLUMNS = "id, room, user_id, nickname, body, inserted_at";
 const MESSAGE_LIMIT_DEFAULT = 50;
 const MESSAGE_LIMIT_MAX = 200;
+const ROOM_COLUMNS = "id, slug, user_id, name, visibility, inserted_at, updated_at";
+const MEMBERSHIP_COLUMNS = "id, room_id, user_id, inserted_at";
+const ROOM_NAME_MAX_LENGTH = 160;
+const ROOM_VISIBILITIES = ["link", "private"];
 const USER_COLUMNS = "id, email, hashed_password, confirmed_at, inserted_at, updated_at";
 const USER_TOKEN_COLUMNS =
   "id, user_id, token, context, sent_to, authenticated_at, inserted_at";
@@ -57,8 +61,21 @@ const CONTEXT_MAX_LENGTH = 100;
  *   GET    /tasks/:id?user_id= -> {task: row} | 404
  *   PATCH  /tasks/:id?user_id= -> {task: row}       body: {title?, completed?}
  *   DELETE /tasks/:id?user_id= -> {deleted: true} | 404
- *   GET    /messages?room=&limit= -> {messages: [row]}  (oldest first)
- *   POST   /messages   -> 201 {message: row}  body: {room, nickname, body}
+ *   GET    /messages?room=&limit=&user_id= -> {messages: [row]} | 403  (oldest first)
+ *   POST   /messages   -> 201 {message: row} | 403
+ *                         body: {room, nickname, body, user_id?}
+ *   GET    /rooms?user_id=      -> {rooms: [row + role]}   owned and shared-with-me
+ *   POST   /rooms               -> 201 {room: row} | 409
+ *                                  body: {user_id, slug, visibility, name?}
+ *   GET    /rooms/:slug?user_id= -> {room: row, role} | 403 | 404
+ *   PATCH  /rooms/:slug?user_id= -> {room: row} | 404      owner only
+ *                                  body: {name?, visibility?}
+ *   DELETE /rooms/:slug?user_id= -> {deleted: true} | 404  owner only; takes
+ *                                  the room's messages with it in one batch
+ *   GET    /room_memberships?room_slug=&owner_id= -> {memberships: [row + email]} | 404
+ *   POST   /room_memberships    -> 201 {membership: row} | 404 | 409
+ *                                  body: {room_slug, owner_id, user_id}
+ *   DELETE /room_memberships?room_slug=&user_id=&actor_id= -> {deleted: count}
  *   GET    /users?email=  -> {user: row} | 404   (email matched case-insensitively)
  *   GET    /users/:id  -> {user: row} | 404
  *   POST   /users      -> 201 {user: row} | 409  body: {email, hashed_password?,
@@ -70,6 +87,14 @@ const CONTEXT_MAX_LENGTH = 100;
  *                                                        sent_to?, authenticated_at?}
  *   GET    /user_tokens?token=&context= -> {user_token: row, user: row} | 404
  *   DELETE /user_tokens?token=&context= -> {deleted: count}
+ *
+ * Rooms are owned and shareable (see migration 0005), and — as with tasks —
+ * the authorization is enforced here, in SQL, not in the container: every
+ * message read and write resolves the room's row and checks the viewer
+ * against it. A room with *no* row is a link room, open to anyone with the
+ * slug, which is the behavior every room had before rooms became rows; a
+ * room whose row denies the viewer answers 403, never an empty transcript,
+ * so denial cannot be mistaken for an empty room.
  *
  * Token expiry is deliberately *not* enforced here: the validity windows live
  * in `App.Accounts.UserToken`, where `mix phx.gen.auth` put them, and
@@ -122,6 +147,30 @@ export class D1Gateway extends WorkerEntrypoint<Env> {
         return methodNotAllowed();
       }
 
+      if (isCollection && collection === "rooms") {
+        if (request.method === "GET") return await this.listRooms(db, url);
+        if (request.method === "POST") return await this.createRoom(db, request);
+        return methodNotAllowed();
+      }
+
+      if (isItem && collection === "rooms") {
+        const slug = readText(member, 64);
+        if (slug === null) {
+          return Response.json({ error: "invalid room slug" }, { status: 400 });
+        }
+        if (request.method === "GET") return await this.getRoom(db, slug, url);
+        if (request.method === "PATCH") return await this.updateRoom(db, slug, url, request);
+        if (request.method === "DELETE") return await this.deleteRoom(db, slug, url);
+        return methodNotAllowed();
+      }
+
+      if (isCollection && collection === "room_memberships") {
+        if (request.method === "GET") return await this.listRoomMemberships(db, url);
+        if (request.method === "POST") return await this.createRoomMembership(db, request);
+        if (request.method === "DELETE") return await this.deleteRoomMembership(db, url);
+        return methodNotAllowed();
+      }
+
       if (isCollection && collection === "tasks") {
         if (request.method === "GET") return await this.listTasks(db, url);
         if (request.method === "POST") return await this.createTask(db, request);
@@ -152,7 +201,7 @@ export class D1Gateway extends WorkerEntrypoint<Env> {
       return Response.json({ error: "not found" }, { status: 404 });
     } catch (error) {
       if (isUniqueViolation(error)) {
-        return Response.json({ error: "email has already been taken" }, { status: 409 });
+        return Response.json({ error: "unique constraint violated" }, { status: 409 });
       }
       console.error("D1Gateway error:", error);
       return Response.json({ error: "database error" }, { status: 500 });
@@ -358,6 +407,14 @@ export class D1Gateway extends WorkerEntrypoint<Env> {
       return Response.json({ error: "room is required" }, { status: 400 });
     }
 
+    const viewerId = readViewer(url.searchParams.get("user_id"));
+    if (viewerId === undefined) {
+      return Response.json({ error: "invalid user_id" }, { status: 400 });
+    }
+
+    const access = await this.roomAccess(db, room, viewerId);
+    if (!access.allowed) return forbidden();
+
     const requested = Number(url.searchParams.get("limit") ?? MESSAGE_LIMIT_DEFAULT);
     const limit =
       Number.isInteger(requested) && requested >= 1
@@ -389,15 +446,282 @@ export class D1Gateway extends WorkerEntrypoint<Env> {
       );
     }
 
+    // Anonymous senders are allowed in link rooms, so user_id is optional —
+    // and Elixir sends `null` for a sender it has no account for, which must
+    // read as "absent", not "invalid" (see readOptionalText).
+    const senderId = readViewer(payload.user_id);
+    if (senderId === undefined) {
+      return Response.json({ error: "invalid user_id" }, { status: 400 });
+    }
+
+    const access = await this.roomAccess(db, room, senderId);
+    if (!access.allowed) return forbidden();
+
     const row = await firstRow(
       db
         .prepare(
-          `INSERT INTO messages (room, nickname, body) VALUES (?1, ?2, ?3) ` +
+          `INSERT INTO messages (room, user_id, nickname, body) VALUES (?1, ?2, ?3, ?4) ` +
             `RETURNING ${MESSAGE_COLUMNS}`,
         )
-        .bind(room, nickname, body),
+        .bind(room, senderId, nickname, body),
     );
     return Response.json({ message: row }, { status: 201 });
+  }
+
+  /**
+   * Resolves `slug` against the rooms table for `viewerId` (null when the
+   * viewer is anonymous).
+   *
+   * No row means the slug was never claimed, so the room is an implicit
+   * *link* room — open to anyone, exactly as every room was before rooms
+   * became rows. A row grants `owner` to its `user_id`, `member` to anyone
+   * in `room_memberships`, and `link` to everyone else, which only suffices
+   * when the room's visibility is `link`.
+   */
+  private async roomAccess(
+    db: D1Database,
+    slug: string,
+    viewerId: number | null,
+  ): Promise<{ room: TaskRow | null; allowed: boolean; role: "owner" | "member" | "link" }> {
+    const row = await firstRow(
+      db
+        .prepare(
+          `SELECT ${ROOM_COLUMNS}, ` +
+            `EXISTS (SELECT 1 FROM room_memberships rm ` +
+            `WHERE rm.room_id = rooms.id AND rm.user_id = ?2) AS is_member ` +
+            `FROM rooms WHERE slug = ?1`,
+        )
+        .bind(slug, viewerId),
+    );
+    if (!row) return { room: null, allowed: true, role: "link" };
+
+    const { is_member: isMember, ...room } = row;
+    const role = room.user_id === viewerId ? "owner" : isMember === 1 ? "member" : "link";
+    return { room, allowed: room.visibility === "link" || role !== "link", role };
+  }
+
+  private async listRooms(db: D1Database, url: URL): Promise<Response> {
+    const userId = readId(url.searchParams.get("user_id"));
+    if (userId === null) {
+      return Response.json({ error: "user_id is required" }, { status: 400 });
+    }
+
+    const result = await db
+      .prepare(
+        `SELECT ${ROOM_COLUMNS}, ` +
+          `CASE WHEN user_id = ?1 THEN 'owner' ELSE 'member' END AS role ` +
+          `FROM rooms WHERE user_id = ?1 OR EXISTS ` +
+          `(SELECT 1 FROM room_memberships rm WHERE rm.room_id = rooms.id AND rm.user_id = ?1) ` +
+          `ORDER BY inserted_at DESC, id DESC`,
+      )
+      .bind(userId)
+      .all<TaskRow>();
+    return Response.json({ rooms: result.results });
+  }
+
+  private async createRoom(db: D1Database, request: Request): Promise<Response> {
+    const payload = await readJson(request);
+    const userId = readId(payload.user_id);
+    const slug = readText(payload.slug, 64);
+    const name = readOptionalText(payload.name, ROOM_NAME_MAX_LENGTH);
+    const visibility = readText(payload.visibility, 16);
+
+    if (userId === null) {
+      return Response.json({ error: "user_id is required" }, { status: 400 });
+    }
+    if (slug === null || name === null || !ROOM_VISIBILITIES.includes(visibility ?? "")) {
+      return Response.json({ error: "invalid room attributes" }, { status: 400 });
+    }
+
+    const row = await firstRow(
+      db
+        .prepare(
+          `INSERT INTO rooms (slug, user_id, name, visibility) VALUES (?1, ?2, ?3, ?4) ` +
+            `RETURNING ${ROOM_COLUMNS}`,
+        )
+        .bind(slug, userId, bindable(name), visibility),
+    );
+    return Response.json({ room: row }, { status: 201 });
+  }
+
+  private async getRoom(db: D1Database, slug: string, url: URL): Promise<Response> {
+    const viewerId = readViewer(url.searchParams.get("user_id"));
+    if (viewerId === undefined) {
+      return Response.json({ error: "invalid user_id" }, { status: 400 });
+    }
+
+    const access = await this.roomAccess(db, slug, viewerId);
+    // 404 means "never claimed" — an implicit link room the caller may
+    // enter; 403 means the row exists and denies this viewer. Collapsing the
+    // two would make denial indistinguishable from an open room.
+    if (!access.room) return notFound();
+    if (!access.allowed) return forbidden();
+    return Response.json({ room: access.room, role: access.role });
+  }
+
+  private async updateRoom(
+    db: D1Database,
+    slug: string,
+    url: URL,
+    request: Request,
+  ): Promise<Response> {
+    const userId = readId(url.searchParams.get("user_id"));
+    if (userId === null) {
+      return Response.json({ error: "user_id is required" }, { status: 400 });
+    }
+
+    const payload = await readJson(request);
+    const columns: string[] = [];
+    const values: (string | null)[] = [];
+
+    if (payload.name !== undefined) {
+      const name = readOptionalText(payload.name, ROOM_NAME_MAX_LENGTH);
+      if (name === null) {
+        return Response.json({ error: "invalid name" }, { status: 400 });
+      }
+      columns.push("name");
+      values.push(bindable(name));
+    }
+
+    if (payload.visibility !== undefined) {
+      const visibility = readText(payload.visibility, 16);
+      if (!ROOM_VISIBILITIES.includes(visibility ?? "")) {
+        return Response.json({ error: "invalid visibility" }, { status: 400 });
+      }
+      columns.push("visibility");
+      values.push(visibility);
+    }
+
+    if (columns.length === 0) {
+      return Response.json({ error: "no room attributes to update" }, { status: 400 });
+    }
+
+    // Column names come from the allowlist above, never from the payload.
+    // Owner-bound: a member or stranger updating a room is a 404, as with
+    // tasks.
+    const assignments = columns.map((column, index) => `${column} = ?${index + 1}`).join(", ");
+    const row = await firstRow(
+      db
+        .prepare(
+          `UPDATE rooms SET ${assignments}, updated_at = CURRENT_TIMESTAMP ` +
+            `WHERE slug = ?${columns.length + 1} AND user_id = ?${columns.length + 2} ` +
+            `RETURNING ${ROOM_COLUMNS}`,
+        )
+        .bind(...values, slug, userId),
+    );
+    return row ? Response.json({ room: row }) : notFound();
+  }
+
+  /**
+   * Deletes a room *and its messages* in one batch (a single implicit
+   * transaction). Without the message delete, deleting a private room would
+   * revert it to an unclaimed link room and quietly publish its history.
+   */
+  private async deleteRoom(db: D1Database, slug: string, url: URL): Promise<Response> {
+    const userId = readId(url.searchParams.get("user_id"));
+    if (userId === null) {
+      return Response.json({ error: "user_id is required" }, { status: 400 });
+    }
+
+    const results = await db.batch<TaskRow>([
+      db
+        .prepare(
+          `DELETE FROM messages WHERE room = ?1 AND EXISTS ` +
+            `(SELECT 1 FROM rooms WHERE slug = ?1 AND user_id = ?2)`,
+        )
+        .bind(slug, userId),
+      db.prepare("DELETE FROM rooms WHERE slug = ?1 AND user_id = ?2 RETURNING id").bind(
+        slug,
+        userId,
+      ),
+    ]);
+    const deleted = results[1]?.results?.length ?? 0;
+    return deleted > 0 ? Response.json({ deleted: true }) : notFound();
+  }
+
+  /**
+   * Who a room is shared with, owner-only — membership is the owner's to
+   * see and manage, so anyone else (member included) gets the same 404 a
+   * stranger does.
+   */
+  private async listRoomMemberships(db: D1Database, url: URL): Promise<Response> {
+    const slug = readText(url.searchParams.get("room_slug"), 64);
+    const ownerId = readId(url.searchParams.get("owner_id"));
+    if (slug === null || ownerId === null) {
+      return Response.json({ error: "room_slug and owner_id are required" }, { status: 400 });
+    }
+
+    const room = await firstRow(
+      db.prepare("SELECT id FROM rooms WHERE slug = ?1 AND user_id = ?2").bind(slug, ownerId),
+    );
+    if (!room) return notFound();
+
+    const result = await db
+      .prepare(
+        `SELECT rm.id, rm.user_id, u.email, rm.inserted_at ` +
+          `FROM room_memberships rm JOIN users u ON u.id = rm.user_id ` +
+          `WHERE rm.room_id = ?1 ORDER BY rm.id`,
+      )
+      .bind(room.id)
+      .all<TaskRow>();
+    return Response.json({ memberships: result.results });
+  }
+
+  private async createRoomMembership(db: D1Database, request: Request): Promise<Response> {
+    const payload = await readJson(request);
+    const slug = readText(payload.room_slug, 64);
+    const ownerId = readId(payload.owner_id);
+    const userId = readId(payload.user_id);
+
+    if (slug === null || ownerId === null || userId === null) {
+      return Response.json(
+        { error: "room_slug, owner_id and user_id are required" },
+        { status: 400 },
+      );
+    }
+
+    // One statement does all the checks: the room must exist and belong to
+    // `owner_id` (so nobody shares someone else's room), the invitee must be
+    // a real account, and the owner cannot be made a member of their own
+    // room. Any failure is a 404; a repeat share trips the unique index and
+    // answers 409.
+    const row = await firstRow(
+      db
+        .prepare(
+          `INSERT INTO room_memberships (room_id, user_id) ` +
+            `SELECT r.id, u.id FROM rooms r JOIN users u ON u.id = ?3 ` +
+            `WHERE r.slug = ?1 AND r.user_id = ?2 AND u.id <> r.user_id ` +
+            `RETURNING ${MEMBERSHIP_COLUMNS}`,
+        )
+        .bind(slug, ownerId, userId),
+    );
+    return row ? Response.json({ membership: row }, { status: 201 }) : notFound();
+  }
+
+  private async deleteRoomMembership(db: D1Database, url: URL): Promise<Response> {
+    const slug = readText(url.searchParams.get("room_slug"), 64);
+    const userId = readId(url.searchParams.get("user_id"));
+    const actorId = readId(url.searchParams.get("actor_id"));
+
+    if (slug === null || userId === null || actorId === null) {
+      return Response.json(
+        { error: "room_slug, user_id and actor_id are required" },
+        { status: 400 },
+      );
+    }
+
+    // Two callers are legitimate: the owner revoking a member, and a member
+    // removing themselves (leaving). Anyone else deletes zero rows.
+    const result = await db
+      .prepare(
+        `DELETE FROM room_memberships ` +
+          `WHERE room_id = (SELECT id FROM rooms WHERE slug = ?1) AND user_id = ?2 ` +
+          `AND (?3 = ?2 OR EXISTS (SELECT 1 FROM rooms WHERE slug = ?1 AND user_id = ?3)) ` +
+          `RETURNING id`,
+      )
+      .bind(slug, userId, actorId)
+      .run<TaskRow>();
+    return Response.json({ deleted: result.results?.length ?? 0 });
   }
 
   private async listTasks(db: D1Database, url: URL): Promise<Response> {
@@ -515,6 +839,22 @@ function methodNotAllowed(): Response {
 
 function notFound(): Response {
   return Response.json({ error: "not found" }, { status: 404 });
+}
+
+function forbidden(): Response {
+  return Response.json({ error: "forbidden" }, { status: 403 });
+}
+
+/**
+ * A viewer on the message and room read paths: absent (or JSON `null`) means
+ * anonymous and is a legitimate value — link rooms serve anyone — so this
+ * returns `null` for it, a number for a real id, and `undefined` for a value
+ * that was sent but unusable, which callers answer with a 400.
+ */
+function readViewer(value: unknown): number | null | undefined {
+  if (value === undefined || value === null) return null;
+  const id = readId(value);
+  return id === null ? undefined : id;
 }
 
 /**
