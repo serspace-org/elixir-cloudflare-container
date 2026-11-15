@@ -38,6 +38,36 @@ pass("GET /health")
 const sockets = await fetch(new URL("/health/sockets", base)).then(r => r.json())
 pass(`node ${sockets.node}, uptime ${Math.round(sockets.node_uptime_ms / 1000)}s, d1_ready=${sockets.d1_ready}`)
 
+// A form POST that Phoenix answers with a redirect. Nothing in the Elixir
+// suite can reach this: it is the Worker's proxy that has to hand the 302
+// back instead of chasing it, and chasing it threw a TypeError — the request
+// body arrives as a stream and cannot be replayed — which Cloudflare served
+// as error 1101. Every auth form POST redirects, so this class of bug is one
+// deploy away whenever the proxy changes.
+const loginPage = await fetch(new URL("/users/log-in", base))
+const cookie = (loginPage.headers.getSetCookie?.() || []).map(c => c.split(";")[0]).join("; ")
+const csrf = ((await loginPage.text()).match(/name="csrf-token" content="([^"]+)"/) || [])[1]
+if (!csrf) { fail("could not read a CSRF token from /users/log-in") }
+
+const redirecting = await fetch(new URL("/users/log-in", base), {
+  method: "POST",
+  redirect: "manual",
+  headers: {"content-type": "application/x-www-form-urlencoded", cookie},
+  // Deliberately wrong credentials: the point is the 302, not a session.
+  body: new URLSearchParams({
+    _csrf_token: csrf,
+    "user[email]": "ws-smoke-nobody@example.com",
+    "user[password]": "definitely not the password",
+  }).toString(),
+})
+if (redirecting.status !== 302) {
+  fail(`POST /users/log-in returned ${redirecting.status}, expected a 302 passed through`)
+}
+if (!redirecting.headers.get("location")) {
+  fail("POST /users/log-in returned a 302 with no Location header")
+}
+pass(`form POST redirect passed through (302 -> ${redirecting.headers.get("location")})`)
+
 const socket = new WebSocket(wsUrl)
 let ref = 0
 const topic = `room:${ROOM}`

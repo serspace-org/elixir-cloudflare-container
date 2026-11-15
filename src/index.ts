@@ -572,6 +572,24 @@ export class ElixirContainer extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    try {
+      return await this.proxy(request);
+    } catch (error) {
+      // This method had no catch, so any throw reached the client as
+      // Cloudflare error 1101 — an opaque page that says only "Worker threw
+      // exception". A 503 the client can retry is strictly better, and the
+      // exception is still logged for Workers Logs. Both sources land here:
+      // a failed proxy fetch, and `startAndWait()` giving up on a container
+      // that never became ready.
+      console.error("Container request failed:", error);
+      return new Response("Service temporarily unavailable, please retry.", {
+        status: 503,
+        headers: { "retry-after": "5", "content-type": "text/plain" },
+      });
+    }
+  }
+
+  private async proxy(request: Request): Promise<Response> {
     this.starting ??= this.startAndWait().finally(() => {
       this.starting = undefined;
     });
@@ -593,6 +611,21 @@ export class ElixirContainer extends DurableObject<Env> {
       method: request.method,
       headers,
       body: request.body,
+      // A proxy must hand redirects back to the client, not chase them. Left
+      // to default ("follow"), fetch tries to re-issue the request at the
+      // Location — and re-issuing a POST means replaying a body that came in
+      // as a stream, which throws:
+      //
+      //   TypeError: A request with a one-time-use body ... encountered a
+      //   redirect requiring the body to be retransmitted.
+      //
+      // The Worker then has no response and Cloudflare serves error 1101.
+      // Every HTML form POST Phoenix answers with a 302 hit this: logging in,
+      // logging out, changing a password. The side effects still happened —
+      // the account was created, the session token written — only the
+      // response was lost, which made it look like registration had failed
+      // when it had not.
+      redirect: "manual",
       // @ts-expect-error - duplex is needed for streaming request bodies
       duplex: "half",
     });
