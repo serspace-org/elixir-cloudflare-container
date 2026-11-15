@@ -30,11 +30,18 @@ defmodule App.D1 do
   ## Messages (chat demo)
 
   @doc """
-  Returns up to `limit` messages for `room`, oldest first.
+  Returns up to `limit` messages for `room`, oldest first, as seen by
+  `viewer_id` (`nil` for an anonymous viewer).
+
+  The gateway resolves the room against the `rooms` table: a room with no
+  row is an implicit link room anyone may read, and a room whose row denies
+  the viewer is `{:error, :forbidden}` — never an empty transcript.
   """
-  @spec list_messages(String.t(), pos_integer()) :: {:ok, [map()]} | {:error, term()}
-  def list_messages(room, limit \\ 50) when is_binary(room) and is_integer(limit) do
-    query = URI.encode_query(%{"room" => room, "limit" => limit})
+  @spec list_messages(String.t(), pos_integer(), integer() | nil) ::
+          {:ok, [map()]} | {:error, term()}
+  def list_messages(room, limit \\ 50, viewer_id \\ nil)
+      when is_binary(room) and is_integer(limit) do
+    query = URI.encode_query(message_scope(room, viewer_id, %{"limit" => limit}))
 
     case request(:get, "/messages?" <> query) do
       {:ok, %{"messages" => rows}} -> {:ok, rows}
@@ -42,12 +49,142 @@ defmodule App.D1 do
     end
   end
 
-  @doc "Persists a chat message and returns its row."
-  @spec create_message(String.t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def create_message(room, nickname, body)
+  @doc """
+  Persists a chat message and returns its row.
+
+  `user_id` attributes the message to an account; `nil` is an anonymous
+  sender, which only link rooms accept. The gateway authorizes the write
+  against the room's row, so a denied sender is `{:error, :forbidden}`.
+  """
+  @spec create_message(String.t(), String.t(), String.t(), integer() | nil) ::
+          {:ok, map()} | {:error, term()}
+  def create_message(room, nickname, body, user_id \\ nil)
       when is_binary(room) and is_binary(nickname) and is_binary(body) do
-    case request(:post, "/messages", %{room: room, nickname: nickname, body: body}) do
+    params = %{room: room, nickname: nickname, body: body, user_id: user_id}
+
+    case request(:post, "/messages", params) do
       {:ok, %{"message" => row}} -> {:ok, row}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp message_scope(room, nil, extra), do: Map.merge(%{"room" => room}, extra)
+
+  defp message_scope(room, viewer_id, extra) when is_integer(viewer_id) do
+    Map.merge(%{"room" => room, "user_id" => viewer_id}, extra)
+  end
+
+  ## Rooms (owned, shareable chats; see App.Chat)
+
+  @doc "Returns the rooms `user_id` owns or is a member of, newest first, with a `\"role\"`."
+  @spec list_rooms(integer()) :: {:ok, [map()]} | {:error, term()}
+  def list_rooms(user_id) when is_integer(user_id) do
+    query = URI.encode_query(%{"user_id" => user_id})
+
+    case request(:get, "/rooms?" <> query) do
+      {:ok, %{"rooms" => rows}} -> {:ok, rows}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Claims `slug` for a user and returns the room row.
+
+  `attrs` takes `:user_id`, `:slug`, `:visibility` (`"link"` or
+  `"private"`) and optionally `:name`. Returns `{:error, :conflict}` when
+  the unique index on the slug rejects the row — the slug is already
+  claimed — which `App.Chat` answers by generating a fresh slug.
+  """
+  @spec create_room(map()) :: {:ok, map()} | {:error, term()}
+  def create_room(%{user_id: _, slug: _, visibility: _} = attrs) do
+    params = Map.take(attrs, [:user_id, :slug, :name, :visibility])
+
+    case request(:post, "/rooms", params) do
+      {:ok, %{"room" => row}} -> {:ok, row}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Returns `{:ok, {room_row, role}}` for `slug` as seen by `viewer_id`.
+
+  `role` is `"owner"`, `"member"` or `"link"`. `{:error, :not_found}` means
+  the slug was never claimed — an implicit link room the caller may enter —
+  while `{:error, :forbidden}` means the room exists and denies the viewer.
+  """
+  @spec get_room(String.t(), integer() | nil) ::
+          {:ok, {map(), String.t()}} | {:error, term()}
+  def get_room(slug, viewer_id \\ nil) when is_binary(slug) do
+    query =
+      case viewer_id do
+        nil -> ""
+        id when is_integer(id) -> "?" <> URI.encode_query(%{"user_id" => id})
+      end
+
+    case request(:get, "/rooms/#{slug}" <> query) do
+      {:ok, %{"room" => row, "role" => role}} -> {:ok, {row, role}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc "Updates `user_id`'s room (`:name`, `:visibility`) and returns its row."
+  @spec update_room(String.t(), integer(), map()) :: {:ok, map()} | {:error, term()}
+  def update_room(slug, user_id, attrs)
+      when is_binary(slug) and is_integer(user_id) and is_map(attrs) do
+    query = URI.encode_query(%{"user_id" => user_id})
+    params = Map.take(attrs, [:name, :visibility])
+
+    case request(:patch, "/rooms/#{slug}?" <> query, params) do
+      {:ok, %{"room" => row}} -> {:ok, row}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc "Deletes `user_id`'s room and, in the same batch, its messages."
+  @spec delete_room(String.t(), integer()) :: :ok | {:error, term()}
+  def delete_room(slug, user_id) when is_binary(slug) and is_integer(user_id) do
+    query = URI.encode_query(%{"user_id" => user_id})
+
+    case request(:delete, "/rooms/#{slug}?" <> query) do
+      {:ok, _body} -> :ok
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Shares `owner_id`'s room with `member_id`.
+
+  `{:error, :not_found}` when the room does not exist, is not `owner_id`'s,
+  the invitee is not a real account, or the invitee *is* the owner;
+  `{:error, :conflict}` when the room is already shared with them.
+  """
+  @spec create_room_membership(String.t(), integer(), integer()) ::
+          {:ok, map()} | {:error, term()}
+  def create_room_membership(slug, owner_id, member_id)
+      when is_binary(slug) and is_integer(owner_id) and is_integer(member_id) do
+    params = %{room_slug: slug, owner_id: owner_id, user_id: member_id}
+
+    case request(:post, "/room_memberships", params) do
+      {:ok, %{"membership" => row}} -> {:ok, row}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Removes `member_id` from a room, as `actor_id`.
+
+  The gateway only deletes when the actor is the room's owner or the member
+  themselves (leaving); anyone else deletes zero rows.
+  """
+  @spec delete_room_membership(String.t(), integer(), integer()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def delete_room_membership(slug, member_id, actor_id)
+      when is_binary(slug) and is_integer(member_id) and is_integer(actor_id) do
+    query =
+      URI.encode_query(%{"room_slug" => slug, "user_id" => member_id, "actor_id" => actor_id})
+
+    case request(:delete, "/room_memberships?" <> query) do
+      {:ok, %{"deleted" => count}} -> {:ok, count}
       {:error, _reason} = error -> error
     end
   end
@@ -257,6 +394,10 @@ defmodule App.D1 do
 
       {:ok, %Req.Response{status: 404}} ->
         {:error, :not_found}
+
+      # A room's row exists and denies the caller; see the room routes.
+      {:ok, %Req.Response{status: 403}} ->
+        {:error, :forbidden}
 
       # A unique index rejected the write. Which index depends on the route —
       # lower(users.email) on the user routes, for instance — so callers that
