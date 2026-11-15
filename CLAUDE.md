@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Phoenix 1.8 LiveView app packaged as a Docker container and served on Cloudflare Containers, fronted by a Worker + Durable Object. See `README.md` for setup/deploy prose; `app/AGENTS.md` holds the Phoenix/Elixir/LiveView coding rules and applies to everything under `app/` — read it before touching Elixir or HEEx.
+A Phoenix 1.8 LiveView app packaged as a Docker container and served on Cloudflare Containers, fronted by a Worker + Durable Object. `README.md` is the short entry point; the detail lives in `docs/` — `architecture.md` (the gateway pattern and its rules), `setup.md`, `deploy.md`, `authentication.md`, `realtime.md`, and `troubleshooting.md`. Read `docs/troubleshooting.md` before debugging anything here: it covers reading the Worker's logs and inspecting D1 and the mail queue, and logs the defects this setup has already produced. `app/AGENTS.md` holds the Phoenix/Elixir/LiveView coding rules and applies to everything under `app/` — read it before touching Elixir or HEEx.
 
 ## Architecture
 
@@ -92,4 +92,4 @@ D1 migrations are applied by CI **before** `wrangler deploy` (`.github/workflows
 - Container disk is ephemeral. Durable state belongs in D1.
 - `App.D1.LocalGateway` binds port 4100, so only one dev server runs at a time — a second one fails to boot there, and the error names Bandit rather than the port.
 - Assets are Elixir-managed (`esbuild`/`tailwind` Hex packages); there is no Node.js in the Docker build and no `assets/package.json`. Tailwind v4, no `tailwind.config.js`.
-- Secrets (`SECRET_KEY_BASE`, `PHX_HOST`) are Worker secrets set with `wrangler secret put`, mirrored into `.dev.vars` for local dev.
+- Secrets (`SECRET_KEY_BASE`, `PHX_HOST`, and `MAIL_FROM` when email is wired) are Worker secrets set with `wrangler secret put`, mirrored into `.dev.vars` for local dev. They reach Phoenix at `container.start()`, so **changing one does not take effect until the container restarts** — a secret change publishes a new Worker version but leaves the running container alone, and `rollStaleContainer` only reacts to a changed image.
