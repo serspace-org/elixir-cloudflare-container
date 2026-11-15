@@ -50,6 +50,16 @@ defmodule AppWeb.UserAuth do
     user_token = get_session(conn, :user_token)
     user_token && Accounts.delete_user_session_token(user_token)
 
+    # The raw channel socket (AppWeb.UserSocket) authenticates with a signed
+    # token, not the session, so deleting the session row alone leaves it
+    # connected and authorized. Its id is per *user*, so this also drops the
+    # user's channel sockets in other browsers — coarse on purpose; see
+    # UserSocket.id/1.
+    case conn.assigns[:current_scope] do
+      %Scope{user: %{id: user_id}} -> disconnect_user_sockets(user_id)
+      _anonymous -> :ok
+    end
+
     if live_socket_id = get_session(conn, :live_socket_id) do
       AppWeb.Endpoint.broadcast(live_socket_id, "disconnect", %{})
     end
@@ -176,9 +186,20 @@ defmodule AppWeb.UserAuth do
     Enum.each(tokens, fn %{token: token} ->
       AppWeb.Endpoint.broadcast(user_session_topic(token), "disconnect", %{})
     end)
+
+    # Channel sockets are identified per user (see UserSocket.id/1), so one
+    # broadcast per distinct user covers them.
+    tokens
+    |> Enum.map(& &1.user_id)
+    |> Enum.uniq()
+    |> Enum.each(&disconnect_user_sockets/1)
   end
 
   defp user_session_topic(token), do: "users_sessions:#{Base.url_encode64(token)}"
+
+  defp disconnect_user_sockets(user_id) do
+    AppWeb.Endpoint.broadcast("users_sockets:#{user_id}", "disconnect", %{})
+  end
 
   @doc """
   Handles mounting and authenticating the current_scope in LiveViews.

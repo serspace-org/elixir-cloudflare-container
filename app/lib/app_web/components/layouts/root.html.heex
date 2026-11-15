@@ -4,6 +4,13 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="csrf-token" content={get_csrf_token()} />
+    <%!-- Identity for the raw channel socket (see AppWeb.UserSocket):
+          channel_probe.js passes this as the `user_token` connect param. --%>
+    <meta
+      :if={assigns[:current_scope] && @current_scope.user}
+      name="user-token"
+      content={AppWeb.UserSocket.sign_token(@current_scope.user)}
+    />
     <.live_title default="App" suffix=" · Phoenix Framework">
       {assigns[:page_title]}
     </.live_title>

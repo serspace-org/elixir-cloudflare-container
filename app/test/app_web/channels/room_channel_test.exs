@@ -108,6 +108,97 @@ defmodule AppWeb.RoomChannelTest do
     end
   end
 
+  describe "owned rooms" do
+    # Room authorization is SQL in the gateway, so these run against the
+    # sqlite-backed stub (see App.D1Stub.stub_d1_sqlite!/1).
+    setup :stub_d1_sqlite!
+
+    setup do
+      import App.AccountsFixtures
+      owner = user_scope_fixture()
+      {:ok, room} = Chat.create_room(owner)
+      %{owner: owner, room: room}
+    end
+
+    defp connect_as(scope) do
+      {:ok, socket} =
+        connect(AppWeb.UserSocket, %{
+          "user_token" => AppWeb.UserSocket.sign_token(scope.user)
+        })
+
+      socket
+    end
+
+    test "the owner joins their private room through the socket identity",
+         %{owner: owner, room: room} do
+      assert {:ok, reply, _socket} =
+               subscribe_and_join(connect_as(owner), "room:#{room.slug}", %{})
+
+      assert reply.room == room.slug
+    end
+
+    test "a stranger and an anonymous client are unauthorized, not unknown",
+         %{room: room} do
+      import App.AccountsFixtures
+      stranger = user_scope_fixture()
+
+      assert {:error, %{reason: "unauthorized"}} =
+               subscribe_and_join(connect_as(stranger), "room:#{room.slug}", %{})
+
+      {:ok, anonymous} = connect(AppWeb.UserSocket, %{})
+
+      assert {:error, %{reason: "unauthorized"}} =
+               subscribe_and_join(anonymous, "room:#{room.slug}", %{})
+    end
+
+    test "a revoked member is pushed access_revoked and dropped",
+         %{owner: owner, room: room} do
+      import App.AccountsFixtures
+      member = user_scope_fixture()
+      {:ok, _shared} = Chat.share_room(owner, room.slug, member.user.email)
+
+      assert {:ok, _reply, socket} =
+               subscribe_and_join(connect_as(member), "room:#{room.slug}", %{})
+
+      # The channel stops itself after the push; don't take the test down
+      # with it.
+      Process.unlink(socket.channel_pid)
+      monitor = Process.monitor(socket.channel_pid)
+
+      assert {:ok, 1} = Chat.unshare_room(owner, room.slug, member.user.id)
+      assert_push "access_revoked", %{}
+      assert_receive {:DOWN, ^monitor, :process, _pid, _reason}
+    end
+
+    test "other members stay connected when someone else is revoked",
+         %{owner: owner, room: room} do
+      import App.AccountsFixtures
+      member = user_scope_fixture()
+      bystander = user_scope_fixture()
+      {:ok, _shared} = Chat.share_room(owner, room.slug, member.user.email)
+      {:ok, _shared} = Chat.share_room(owner, room.slug, bystander.user.email)
+
+      assert {:ok, _reply, _socket} =
+               subscribe_and_join(connect_as(bystander), "room:#{room.slug}", %{})
+
+      assert {:ok, 1} = Chat.unshare_room(owner, room.slug, member.user.id)
+      refute_push "access_revoked", %{}
+    end
+
+    test "deleting the room pushes room_deleted and drops the channel",
+         %{owner: owner, room: room} do
+      assert {:ok, _reply, socket} =
+               subscribe_and_join(connect_as(owner), "room:#{room.slug}", %{})
+
+      Process.unlink(socket.channel_pid)
+      monitor = Process.monitor(socket.channel_pid)
+
+      assert :ok = Chat.delete_room(owner, room.slug)
+      assert_push "room_deleted", %{}
+      assert_receive {:DOWN, ^monitor, :process, _pid, _reason}
+    end
+  end
+
   describe "diagnostics" do
     test "ping echoes the client timestamp with server facts" do
       stub_d1_messages()

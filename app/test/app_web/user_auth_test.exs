@@ -380,14 +380,20 @@ defmodule AppWeb.UserAuthTest do
   end
 
   describe "disconnect_sessions/1" do
-    test "broadcasts disconnect messages for each token" do
-      tokens = [%{token: "token1"}, %{token: "token2"}]
+    test "broadcasts disconnect messages for each token and each user's channel sockets" do
+      tokens = [%{token: "token1", user_id: 7}, %{token: "token2", user_id: 7}]
 
       for %{token: token} <- tokens do
         AppWeb.Endpoint.subscribe("users_sessions:#{Base.url_encode64(token)}")
       end
 
+      AppWeb.Endpoint.subscribe("users_sockets:7")
+
       UserAuth.disconnect_sessions(tokens)
+
+      # One broadcast per distinct user, not per token.
+      assert_receive %Phoenix.Socket.Broadcast{event: "disconnect", topic: "users_sockets:7"}
+      refute_receive %Phoenix.Socket.Broadcast{event: "disconnect", topic: "users_sockets:7"}
 
       assert_receive %Phoenix.Socket.Broadcast{
         event: "disconnect",
