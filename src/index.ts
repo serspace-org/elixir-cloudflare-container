@@ -541,6 +541,17 @@ function readToken(value: unknown): string | null {
   return value;
 }
 
+/**
+ * As `readOptionalText`, for an address: JSON has no `undefined`, so a caller
+ * that sends an absent optional field sends `null`. Treating `null` as invalid
+ * rejected every message `App.Mailer.Gateway` sent, because the generated
+ * notifier never sets a reply-to — and the 400 was silent.
+ */
+function readOptionalAddress(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) return undefined;
+  return readAddress(value);
+}
+
 /** A single email address: no display name, no comma-separated lists. */
 function readAddress(value: unknown): string | null {
   const address = readText(value, EMAIL_MAX_LENGTH);
@@ -606,6 +617,8 @@ export class MailGateway extends WorkerEntrypoint<Env> {
     const email = this.env.EMAIL;
     const from = this.env.MAIL_FROM;
     if (!email || !from) {
+      const missing = [!email && "EMAIL binding", !from && "MAIL_FROM"].filter(Boolean);
+      console.error(`MailGateway cannot send, missing: ${missing.join(", ")}`);
       return Response.json({ error: "email sending not configured" }, { status: 503 });
     }
 
@@ -622,15 +635,27 @@ export class MailGateway extends WorkerEntrypoint<Env> {
     const subject = readText(payload.subject, SUBJECT_MAX_LENGTH);
     const text = readText(payload.text, TEXT_BODY_MAX_LENGTH);
     const html = readOptionalText(payload.html, TEXT_BODY_MAX_LENGTH);
-    const replyTo = payload.reply_to === undefined ? undefined : readAddress(payload.reply_to);
+    const replyTo = readOptionalAddress(payload.reply_to);
 
     if (to === null || subject === null || text === null || html === null || replyTo === null) {
-      return Response.json({ error: "invalid message" }, { status: 400 });
+      // Named, because a silent 400 here is indistinguishable from a delivered
+      // message: the Worker invocation still succeeds and the caller still
+      // gets a response. That is how this went unnoticed in production.
+      const invalid = Object.entries({ to, subject, text, html, replyTo })
+        .filter(([, value]) => value === null)
+        .map(([field]) => field);
+      console.error(`MailGateway rejected a message, invalid: ${invalid.join(", ")}`);
+      return Response.json({ error: `invalid message: ${invalid.join(", ")}` }, { status: 400 });
     }
 
     try {
       // `from` is this gateway's, never the caller's.
       const result = await email.send({ from, to, subject, text, html, replyTo });
+      // Recipient domain only: the message id is the correlation key for
+      // Cloudflare's own logs, and user addresses do not belong in Worker logs.
+      console.log(
+        `MailGateway sent ${result.messageId} to *@${to.split("@")[1]}`,
+      );
       return Response.json({ message_id: result.messageId }, { status: 202 });
     } catch (error) {
       // A rejected send must not look like a delivered one. The caller decides

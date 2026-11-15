@@ -50,6 +50,24 @@ defmodule App.Mailer.GatewayTest do
     assert {:ok, %{id: "abc123"}} = Gateway.deliver(email(), [])
   end
 
+  test "omits optional fields rather than sending them as null" do
+    # The generated notifier sets neither, and a `null` reply_to was read as an
+    # invalid address by the gateway — a silent 400 that rejected every message
+    # the app sent, while the Worker invocation still reported success.
+    stub(fn conn ->
+      {:ok, body, conn} = Plug.Conn.read_body(conn)
+      params = Jason.decode!(body)
+
+      refute Map.has_key?(params, "reply_to")
+      refute Map.has_key?(params, "html")
+      assert Map.keys(params) |> Enum.sort() == ["subject", "text", "to"]
+
+      conn |> Plug.Conn.put_status(202) |> Req.Test.json(%{"message_id" => "x"})
+    end)
+
+    assert {:ok, _metadata} = Gateway.deliver(email(), [])
+  end
+
   test "reports the gateway having no mailer configured" do
     stub(fn conn ->
       conn
