@@ -4,6 +4,8 @@ Generated with `mix phx.gen.auth Accounts User users --live --hashing-lib bcrypt
 
 Register at `/users/register` with an email and a password and you are logged in immediately. **No email is sent**, by design for now: see [Mailer](#mailer).
 
+An account gates the owned data: `/tasks`, and the owned/shared chat rooms managed at `/rooms` ([details](realtime.md#owned-and-shared-rooms)). Chat itself stays open to anonymous visitors. Identity also rides the raw channel socket as a signed `user_token` connect param (`AppWeb.UserSocket`), which is why log-out and the password flows broadcast a disconnect to `users_sockets:<id>` — that socket authenticates outside the session.
+
 ## What changed from the generated code, and why
 
 | Generated | Here |

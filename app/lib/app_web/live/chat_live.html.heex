@@ -38,10 +38,22 @@
       </button>
     </div>
     <p class="mt-2 text-xs text-zinc-500">
-      Anyone opening that link joins this room. The raw channel client for the same room is at <a
+      <%= if @chat_room && @chat_room.visibility == "private" do %>
+        This room is private — only its owner and the accounts it is shared
+        with can open the link.
+      <% else %>
+        Anyone opening that link joins this room.
+      <% end %>
+      The raw channel client for the same room is at <a
         href={@probe_url}
         class="underline"
       >{@probe_url}</a>.
+    </p>
+    <p :if={@current_scope && @current_scope.user} class="mt-1 text-xs text-zinc-500">
+      Signed in as {@current_scope.user.email} — manage owned and shared rooms at <.link
+        navigate={~p"/rooms"}
+        class="underline"
+      >/rooms</.link>.
     </p>
 
     <script :type={Phoenix.LiveView.ColocatedHook} name=".CopyLink">
