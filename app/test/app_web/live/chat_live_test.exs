@@ -37,8 +37,8 @@ defmodule AppWeb.ChatLiveTest do
       stub_d1_messages()
       {:ok, view, _html} = live(conn, ~p"/chat/standup")
 
-      {:ok, _message, _durability} = Chat.create_message("other-room", "ada", "wrong room")
-      {:ok, _message, _durability} = Chat.create_message("standup", "ada", "right room")
+      {:ok, _message, _durability} = Chat.create_message(nil, "other-room", "ada", "wrong room")
+      {:ok, _message, _durability} = Chat.create_message(nil, "standup", "ada", "right room")
 
       html = render(view)
       assert html =~ "right room"
@@ -95,7 +95,7 @@ defmodule AppWeb.ChatLiveTest do
     {:ok, view, _html} = live(conn, ~p"/chat")
 
     # Stands in for the raw channel client at /probe.
-    {:ok, _message, _durability} = Chat.create_message("lobby", "prober", "from the channel")
+    {:ok, _message, _durability} = Chat.create_message(nil, "lobby", "prober", "from the channel")
 
     assert render(view) =~ "from the channel"
   end

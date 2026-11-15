@@ -22,10 +22,30 @@ defmodule AppWeb.ChatLive do
   @impl true
   def mount(params, _session, socket) do
     room = Chat.room_or_default(params["room"])
+
+    # Rooms can be owned and private (see App.Chat); a room that denies
+    # this caller bounces to the default room rather than rendering an
+    # empty transcript that looks open. Only a real denial bounces — any
+    # other gateway failure mounts and degrades exactly as before, with
+    # the history read reporting d1_ready: false. (No loop risk: slugs are
+    # always generated, so the default room can never be claimed.)
+    case Chat.room_access(current_scope(socket), room) do
+      {:error, :forbidden} ->
+        {:ok,
+         socket
+         |> put_flash(:error, "You don't have access to that room.")
+         |> push_navigate(to: ~p"/chat")}
+
+      _ok_or_degraded ->
+        mount_room(room, params, socket)
+    end
+  end
+
+  defp mount_room(room, params, socket) do
     nickname = nickname(params)
 
     {messages, d1_ready} =
-      case Chat.recent_messages(room) do
+      case Chat.recent_messages(current_scope(socket), room) do
         {:ok, messages} -> {messages, true}
         {:error, _reason} -> {[], false}
       end
@@ -94,15 +114,26 @@ defmodule AppWeb.ChatLive do
   end
 
   def handle_event("send", %{"body" => body}, socket) do
-    case Chat.create_message(socket.assigns.room, socket.assigns.nickname, body) do
+    case Chat.create_message(
+           current_scope(socket),
+           socket.assigns.room,
+           socket.assigns.nickname,
+           body
+         ) do
       {:ok, _message, durability} ->
         # The broadcast comes back through handle_info, so the message is
         # streamed there — proving the PubSub round trip rather than
         # short-circuiting it locally.
         {:noreply, assign(socket, durability: durability, error: nil)}
 
-      {:error, changeset} ->
+      {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply, assign(socket, error: changeset_message(changeset))}
+
+      {:error, :forbidden} ->
+        {:noreply, assign(socket, error: "you don't have access to this room")}
+
+      {:error, _reason} ->
+        {:noreply, assign(socket, error: "message not delivered")}
     end
   end
 
@@ -132,6 +163,29 @@ defmodule AppWeb.ChatLive do
     {:noreply, assign(socket, present: present_count(socket.assigns.room))}
   end
 
+  # Membership revoked mid-session (App.Chat.unshare_room/3). Authorization
+  # is otherwise only checked on mount, so without this a revoked member
+  # would keep receiving the room's broadcasts until they reloaded.
+  def handle_info({:access_revoked, user_id}, socket) do
+    case current_scope(socket) do
+      %{user: %{id: ^user_id}} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Your access to this room was revoked.")
+         |> push_navigate(to: ~p"/chat")}
+
+      _other ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_info({:room_deleted}, socket) do
+    {:noreply,
+     socket
+     |> put_flash(:error, "This room was deleted.")
+     |> push_navigate(to: ~p"/chat")}
+  end
+
   ## Helpers
 
   # A client-supplied nickname, so the same person keeps their name across a
@@ -152,6 +206,11 @@ defmodule AppWeb.ChatLive do
   defp random_nickname do
     "live-" <> (:crypto.strong_rand_bytes(3) |> Base.encode16(case: :lower))
   end
+
+  # /chat is mountable anonymously, so current_scope may be absent (it is
+  # only assigned inside a live_session with a UserAuth on_mount hook) or
+  # nil — both read as an anonymous caller, which App.Chat accepts.
+  defp current_scope(socket), do: socket.assigns[:current_scope]
 
   defp presence_topic(room), do: "room:" <> room
 

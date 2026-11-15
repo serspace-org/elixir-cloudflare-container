@@ -21,10 +21,20 @@ defmodule AppWeb.RoomChannel do
 
   @impl true
   def join("room:" <> room, _params, socket) do
-    if Chat.valid_room?(room) do
-      join_room(room, socket)
-    else
-      {:error, %{reason: "unknown room"}}
+    cond do
+      not Chat.valid_room?(room) ->
+        {:error, %{reason: "unknown room"}}
+
+      # Rooms can be owned and private (see App.Chat). "unauthorized" is
+      # deliberately distinct from "unknown room": a client can tell "no
+      # such room" from "not yours". Only a real denial rejects the join —
+      # any other gateway failure degrades exactly as before, with the
+      # history read reporting d1_ready: false.
+      match?({:error, :forbidden}, Chat.room_access(current_scope(socket), room)) ->
+        {:error, %{reason: "unauthorized"}}
+
+      true ->
+        join_room(room, socket)
     end
   end
 
@@ -34,7 +44,7 @@ defmodule AppWeb.RoomChannel do
     send(self(), :after_join)
 
     {history, d1_ready} =
-      case Chat.recent_messages(room) do
+      case Chat.recent_messages(current_scope(socket), room) do
         {:ok, messages} ->
           {messages, true}
 
@@ -74,14 +84,44 @@ defmodule AppWeb.RoomChannel do
     {:noreply, socket}
   end
 
+  # Membership revoked mid-session (App.Chat.unshare_room/3). Authorization
+  # is otherwise only checked on join, so without this a revoked member
+  # would keep receiving the room's broadcasts until they reconnected.
+  def handle_info({:access_revoked, user_id}, socket) do
+    case current_scope(socket) do
+      %{user: %{id: ^user_id}} ->
+        push(socket, "access_revoked", %{})
+        {:stop, :shutdown, socket}
+
+      _other ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_info({:room_deleted}, socket) do
+    push(socket, "room_deleted", %{})
+    {:stop, :shutdown, socket}
+  end
+
   @impl true
   def handle_in("new_msg", %{"body" => body}, socket) do
-    case Chat.create_message(socket.assigns.room, socket.assigns.nickname, body) do
+    case Chat.create_message(
+           current_scope(socket),
+           socket.assigns.room,
+           socket.assigns.nickname,
+           body
+         ) do
       {:ok, _message, durability} ->
         {:reply, {:ok, %{durability: durability}}, socket}
 
-      {:error, changeset} ->
+      {:error, %Ecto.Changeset{} = changeset} ->
         {:reply, {:error, %{reason: changeset_message(changeset)}}, socket}
+
+      {:error, :forbidden} ->
+        {:reply, {:error, %{reason: "unauthorized"}}, socket}
+
+      {:error, _reason} ->
+        {:reply, {:error, %{reason: "message not delivered"}}, socket}
     end
   end
 
@@ -96,6 +136,12 @@ defmodule AppWeb.RoomChannel do
   end
 
   ## Helpers
+
+  # The raw channel socket is anonymous today (see AppWeb.UserSocket), so
+  # current_scope is usually absent — which App.Chat reads as an anonymous
+  # caller. A later change can assign a scope at connect time and every
+  # call here picks it up.
+  defp current_scope(socket), do: socket.assigns[:current_scope]
 
   defp render_message(message) do
     %{
