@@ -7,19 +7,39 @@ defmodule App.Chat do
   and the local PubSub adapter is enough) and persisted to Cloudflare D1
   through the private gateway in `App.D1`.
 
-  Persistence is best-effort on purpose: when the gateway is unreachable —
-  running `mix phx.server` without `wrangler dev`, say — `create_message/3`
-  still returns a message struct so the transport can be exercised without a
-  database. Callers can tell the two apart via `d1_available?/0`.
+  ## Ownership and sharing
+
+  Every function takes an `App.Accounts.Scope` first, like `App.Tasks` —
+  with one deliberate difference: a scope with no user (or `nil`) is a
+  legitimate caller here, because anonymous chat in *link* rooms is a
+  feature, not a hole. The protection is the SQL predicate in the gateway,
+  not a pattern match: a room with no row is an implicit link room open to
+  anyone with the slug (exactly what every room was before rooms became
+  rows), while a claimed room's row decides who may read and write. The
+  room management functions — create, rename, share, revoke, delete — do
+  require a user and raise on an anonymous scope.
+
+  Persistence is best-effort on purpose, but only against an *unreachable*
+  gateway — running `mix phx.server` without `wrangler dev`, say — where
+  `create_message/4` still returns a message struct so the transport can be
+  exercised without a database. A gateway that answered and said no
+  (`{:error, :forbidden}`) is an error and nothing is broadcast: treating
+  denial as "ephemeral" would let a revoked member keep talking to the
+  room. Callers can tell the modes apart via `d1_available?/0`.
   """
 
+  alias App.Accounts.Scope
   alias App.Chat.Message
+  alias App.Chat.Room
   alias App.D1
   alias Ecto.Changeset
 
   @default_room "lobby"
   @history_limit 50
   @room_format ~r/^[a-z0-9][a-z0-9-]{0,63}$/
+  # Claiming a random slug that is already taken is a one-in-2^40 event, so
+  # one retry is plenty and a second conflict is worth surfacing.
+  @create_room_attempts 3
 
   @doc "The room joined when no room is named."
   @spec default_room() :: String.t()
@@ -64,15 +84,186 @@ defmodule App.Chat do
   @spec subscribe(String.t()) :: :ok | {:error, term()}
   def subscribe(room), do: Phoenix.PubSub.subscribe(App.PubSub, topic(room))
 
-  @doc """
-  Returns the recent history for `room`, oldest first.
+  ## Rooms
 
-  Returns `{:error, reason}` when D1 is unreachable so the caller can show
-  an ephemeral-mode banner rather than an empty transcript.
+  @doc """
+  Resolves `slug` as seen by the scope's user (or an anonymous caller).
+
+  Returns `{:ok, %{room: room, role: role}}` when the caller may enter:
+  `room` is `nil` for a slug that was never claimed — an implicit link room
+  — and `role` is `:owner`, `:member` or `:link`. Returns
+  `{:error, :forbidden}` when the room exists and denies the caller.
+
+  An unreachable gateway resolves to the implicit link room: with no
+  database there are no room rows to consult, and chat is already running
+  in ephemeral mode (see `create_message/4`).
   """
-  @spec recent_messages(String.t(), pos_integer()) :: {:ok, [Message.t()]} | {:error, term()}
-  def recent_messages(room, limit \\ @history_limit) do
-    with {:ok, rows} <- D1.list_messages(room, limit) do
+  @spec room_access(Scope.t() | nil, String.t()) ::
+          {:ok, %{room: Room.t() | nil, role: :owner | :member | :link}}
+          | {:error, :forbidden | term()}
+  def room_access(scope, slug) when is_binary(slug) do
+    case D1.get_room(slug, user_id(scope)) do
+      {:ok, {row, role}} -> {:ok, %{room: to_room(row, role), role: parse_role(role)}}
+      {:error, :not_found} -> {:ok, %{room: nil, role: :link}}
+      {:error, :gateway_unreachable} -> {:ok, %{room: nil, role: :link}}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc "Returns the rooms the scope's user owns or is a member of, newest first."
+  @spec list_rooms(Scope.t()) :: {:ok, [Room.t()]} | {:error, term()}
+  def list_rooms(%Scope{user: %{id: user_id}}) do
+    with {:ok, rows} <- D1.list_rooms(user_id) do
+      {:ok, Enum.map(rows, &to_room(&1, &1["role"]))}
+    end
+  end
+
+  @doc """
+  Claims a fresh slug for the scope's user and returns the room.
+
+  `attrs` may carry `:name` and `:visibility` (default `"private"` — a room
+  someone bothers to create is theirs until they open it up). The slug is
+  generated, never supplied; a conflict with an existing claim is answered
+  by generating another.
+  """
+  @spec create_room(Scope.t(), map()) :: {:ok, Room.t()} | {:error, Changeset.t() | term()}
+  def create_room(%Scope{user: %{id: user_id}}, attrs \\ %{}) do
+    %Room{}
+    |> Room.changeset(attrs)
+    |> Changeset.apply_action(:insert)
+    |> case do
+      {:ok, room} -> insert_room(user_id, room, @create_room_attempts)
+      {:error, changeset} -> {:error, changeset}
+    end
+  end
+
+  defp insert_room(_user_id, _room, 0), do: {:error, :conflict}
+
+  defp insert_room(user_id, room, attempts) do
+    params = %{user_id: user_id, slug: new_room(), name: room.name, visibility: room.visibility}
+
+    case D1.create_room(params) do
+      {:ok, row} -> {:ok, to_room(row, "owner")}
+      {:error, :conflict} -> insert_room(user_id, room, attempts - 1)
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
+  Updates the scope's own room (`:name`, `:visibility`).
+
+  A room the user does not own is `{:error, :not_found}`, exactly as with
+  tasks.
+  """
+  @spec update_room(Scope.t(), String.t(), map()) ::
+          {:ok, Room.t()} | {:error, Changeset.t() | term()}
+  def update_room(%Scope{user: %{id: user_id}}, slug, attrs) when is_binary(slug) do
+    %Room{}
+    |> Room.changeset(attrs)
+    |> Changeset.apply_action(:update)
+    |> case do
+      {:ok, room} ->
+        with {:ok, row} <-
+               D1.update_room(slug, user_id, %{name: room.name, visibility: room.visibility}) do
+          {:ok, to_room(row, "owner")}
+        end
+
+      {:error, changeset} ->
+        {:error, changeset}
+    end
+  end
+
+  @doc """
+  Deletes the scope's own room — and, in the same gateway batch, its
+  messages, so a private transcript is never re-published as an unclaimed
+  link room. Broadcasts `{:room_deleted}` so connected clients leave.
+  """
+  @spec delete_room(Scope.t(), String.t()) :: :ok | {:error, term()}
+  def delete_room(%Scope{user: %{id: user_id}}, slug) when is_binary(slug) do
+    with :ok <- D1.delete_room(slug, user_id) do
+      Phoenix.PubSub.broadcast(App.PubSub, topic(slug), {:room_deleted})
+      :ok
+    end
+  end
+
+  @doc """
+  Shares the scope's own room with the account registered under `email`.
+
+  Sharing is with existing accounts only — there is no invitation email
+  (delivery may not even be configured; see
+  `App.Accounts.email_delivery_available?/0`), and link visibility is the
+  escape hatch for everyone else. Returns the member's user row data.
+
+  `{:error, :unknown_email}` when no account matches; `{:error, :conflict}`
+  when the room is already shared with them; `{:error, :not_found}` when
+  the room is not the scope's to share (or the email is the owner's own).
+  """
+  @spec share_room(Scope.t(), String.t(), String.t()) ::
+          {:ok, %{id: integer(), email: String.t()}} | {:error, term()}
+  def share_room(%Scope{user: %{id: user_id}} = _scope, slug, email)
+      when is_binary(slug) and is_binary(email) do
+    case App.Accounts.get_user_by_email(email) do
+      nil ->
+        {:error, :unknown_email}
+
+      member ->
+        with {:ok, _row} <- D1.create_room_membership(slug, user_id, member.id) do
+          {:ok, %{id: member.id, email: member.email}}
+        end
+    end
+  end
+
+  @doc """
+  Revokes `member_id`'s membership of the scope's own room.
+
+  Broadcasts `{:access_revoked, member_id}` on the room topic so the
+  member's live sessions are disconnected — authorization is otherwise only
+  checked on join. Revoking someone who was not a member is `{:ok, 0}`.
+  """
+  @spec unshare_room(Scope.t(), String.t(), integer()) ::
+          {:ok, non_neg_integer()} | {:error, term()}
+  def unshare_room(%Scope{user: %{id: user_id}}, slug, member_id)
+      when is_binary(slug) and is_integer(member_id) do
+    with {:ok, count} <- D1.delete_room_membership(slug, member_id, user_id) do
+      if count > 0 do
+        Phoenix.PubSub.broadcast(App.PubSub, topic(slug), {:access_revoked, member_id})
+      end
+
+      {:ok, count}
+    end
+  end
+
+  @doc "Removes the scope's user from a room they are a member of."
+  @spec leave_room(Scope.t(), String.t()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def leave_room(%Scope{user: %{id: user_id}}, slug) when is_binary(slug) do
+    D1.delete_room_membership(slug, user_id, user_id)
+  end
+
+  @doc "Returns who the scope's own room is shared with."
+  @spec list_members(Scope.t(), String.t()) ::
+          {:ok, [%{id: integer(), user_id: integer(), email: String.t()}]} | {:error, term()}
+  def list_members(%Scope{user: %{id: user_id}}, slug) when is_binary(slug) do
+    with {:ok, rows} <- D1.list_room_memberships(slug, user_id) do
+      {:ok,
+       Enum.map(rows, fn row ->
+         %{id: row["id"], user_id: row["user_id"], email: row["email"]}
+       end)}
+    end
+  end
+
+  ## Messages
+
+  @doc """
+  Returns the recent history for `room` as seen by the scope, oldest first.
+
+  Returns `{:error, :forbidden}` when the room denies the caller, and
+  `{:error, reason}` when D1 is unreachable so the caller can show an
+  ephemeral-mode banner rather than an empty transcript.
+  """
+  @spec recent_messages(Scope.t() | nil, String.t(), pos_integer()) ::
+          {:ok, [Message.t()]} | {:error, term()}
+  def recent_messages(scope, room, limit \\ @history_limit) do
+    with {:ok, rows} <- D1.list_messages(room, limit, user_id(scope)) do
       {:ok, Enum.map(rows, &to_message/1)}
     end
   end
@@ -84,24 +275,35 @@ defmodule App.Chat do
   end
 
   @doc """
-  Validates, persists and broadcasts a message.
+  Validates, persists and broadcasts a message from the scope's user (or an
+  anonymous sender — link rooms accept anyone).
 
   Broadcasts `{:new_message, message}` on the room topic. Returns
-  `{:ok, message, :persisted | :ephemeral}`, or `{:error, changeset}` when
-  validation fails — a failed write is never an error for the caller, since
-  the point of this demo is the transport.
+  `{:ok, message, :persisted | :ephemeral}`, `{:error, changeset}` when
+  validation fails, or `{:error, :forbidden}` when the room denies the
+  sender — in which case nothing is broadcast.
+
+  `:ephemeral` happens only when the gateway is *unreachable* (local dev
+  without `wrangler dev`): the message gets a client-side id so streams and
+  DOM ids still work, and the transport can be tested without a database. A
+  gateway that answered and refused is never downgraded to `:ephemeral` —
+  that would let a denied sender keep talking to the room.
   """
-  @spec create_message(String.t(), String.t(), String.t()) ::
-          {:ok, Message.t(), :persisted | :ephemeral} | {:error, Changeset.t()}
-  def create_message(room, nickname, body) do
+  @spec create_message(Scope.t() | nil, String.t(), String.t(), String.t()) ::
+          {:ok, Message.t(), :persisted | :ephemeral}
+          | {:error, Changeset.t() | :forbidden | term()}
+  def create_message(scope, room, nickname, body) do
+    sender_id = user_id(scope)
+
     %Message{}
-    |> Message.changeset(%{room: room, nickname: nickname, body: body})
+    |> Message.changeset(%{room: room, nickname: nickname, body: body, user_id: sender_id})
     |> Changeset.apply_action(:insert)
     |> case do
       {:ok, message} ->
-        {stored, durability} = persist(message)
-        Phoenix.PubSub.broadcast(App.PubSub, topic(room), {:new_message, stored})
-        {:ok, stored, durability}
+        with {:ok, stored, durability} <- persist(message) do
+          Phoenix.PubSub.broadcast(App.PubSub, topic(room), {:new_message, stored})
+          {:ok, stored, durability}
+        end
 
       {:error, changeset} ->
         {:error, changeset}
@@ -111,25 +313,55 @@ defmodule App.Chat do
   ## Persistence
 
   defp persist(%Message{} = message) do
-    case D1.create_message(message.room, message.nickname, message.body) do
+    case D1.create_message(message.room, message.nickname, message.body, message.user_id) do
       {:ok, row} ->
-        {to_message(row), :persisted}
+        {:ok, to_message(row), :persisted}
 
-      {:error, _reason} ->
+      {:error, :gateway_unreachable} ->
         # Keep the socket usable without a database: give the message a
         # client-side id so streams and DOM ids still work.
-        {%{message | id: System.unique_integer([:positive]), inserted_at: utc_now()}, :ephemeral}
+        {:ok, %{message | id: System.unique_integer([:positive]), inserted_at: utc_now()},
+         :ephemeral}
+
+      {:error, _reason} = error ->
+        error
     end
   end
 
   defp utc_now, do: NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
 
+  ## Scope
+
+  # Anonymous callers are first-class here (see the moduledoc), so a nil
+  # scope — what `fetch_current_scope_for_user` assigns when nobody is
+  # logged in — reads as "no user", not an error.
+  defp user_id(%Scope{user: %{id: id}}), do: id
+  defp user_id(_scope), do: nil
+
   ## Row conversion
+
+  defp to_room(row, role) do
+    %Room{
+      id: row["id"],
+      slug: row["slug"],
+      user_id: row["user_id"],
+      name: row["name"],
+      visibility: row["visibility"],
+      role: parse_role(role),
+      inserted_at: parse_timestamp(row["inserted_at"]),
+      updated_at: parse_timestamp(row["updated_at"])
+    }
+  end
+
+  defp parse_role("owner"), do: :owner
+  defp parse_role("member"), do: :member
+  defp parse_role(_role), do: :link
 
   defp to_message(row) do
     %Message{
       id: row["id"],
       room: row["room"],
+      user_id: row["user_id"],
       nickname: row["nickname"],
       body: row["body"],
       inserted_at: parse_timestamp(row["inserted_at"])

@@ -14,6 +14,9 @@ defmodule App.Chat.Message do
   @primary_key {:id, :integer, []}
   embedded_schema do
     field :room, :string
+    # The account the message came from; nil for an anonymous sender, which
+    # only link rooms accept (enforced by the gateway, not here).
+    field :user_id, :integer
     field :nickname, :string
     field :body, :string
     field :inserted_at, :naive_datetime
@@ -22,7 +25,7 @@ defmodule App.Chat.Message do
   @doc "Casts and validates message attributes."
   def changeset(message, attrs) do
     message
-    |> cast(attrs, [:room, :nickname, :body])
+    |> cast(attrs, [:room, :user_id, :nickname, :body])
     |> update_change(:room, &String.trim/1)
     |> update_change(:nickname, &String.trim/1)
     |> update_change(:body, &String.trim/1)
