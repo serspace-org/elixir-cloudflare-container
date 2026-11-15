@@ -50,11 +50,16 @@ Everything the container needs from Cloudflare arrives through a **private gatew
 
 Needs a Cloudflare Workers **Paid** plan (Containers requires it), Elixir 1.15+ and Node 22+.
 
+Everyday commands live in the [`justfile`](justfile) — `just` on its own lists them:
+
 ```bash
-# Run the Phoenix app on its own: real persistence, no Docker, no Worker.
-cd app && mix deps.get && mix assets.setup && mix assets.build
-mix phx.server                      # http://localhost:4000
+brew install just     # if you do not have it
+just setup            # deps and assets (skips the Postgres-only ecto.setup)
+just dev              # http://localhost:4000, with a real local database
+just test
 ```
+
+`just dev` runs Phoenix natively with full features: `App.D1.LocalGateway` serves the Worker's D1 contract from SQLite, so persistence, tasks, chat history and accounts all work. Two other local modes exist and are good at different things — `just worker-dev` for the real Worker and its gateway intercepts, `just image-build && just image-run` for the production image on its own. The tradeoffs are in the justfile header and in [Setup](docs/setup.md#running-it-locally).
 
 To deploy, push to `main`: CI applies pending D1 migrations, builds the image on native AMD64, and deploys the Worker. **Deploy from CI rather than locally on Apple Silicon** — the `linux/amd64` cross-build crashes the BEAM under QEMU.
 
