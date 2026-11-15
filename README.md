@@ -221,10 +221,21 @@ Sending from the Worker also keeps it off the critical path: every request to th
 #### Turning it on
 
 ```bash
-pnpm exec wrangler email sending enable mail.example.com   # a subdomain, not the root
-pnpm exec wrangler email sending dns mail.example.com      # SPF/DKIM/DMARC records
-pnpm exec wrangler secret put MAIL_FROM                    # e.g. auth@mail.example.com
+pnpm exec wrangler email sending enable mail.example.com      # a subdomain, not the root
+pnpm exec wrangler email sending dns get mail.example.com     # check the SPF/DKIM/DMARC records
+pnpm exec wrangler email sending list                         # confirm it is onboarded
+pnpm exec wrangler secret put MAIL_FROM                       # e.g. auth@mail.example.com
 ```
+
+Prove the domain works before involving the app, so a failure has one possible cause rather than two:
+
+```bash
+pnpm exec wrangler email sending send \
+  --from auth@mail.example.com --to you@example.com \
+  --subject "Email Sending check" --text "hello"
+```
+
+`MAIL_FROM` reaches Phoenix through `container.start()`, so **the container has to restart before it sees it**. Setting the secret publishes a new Worker version but leaves the running container alone, and `rollStaleContainer` only reacts to a changed image. Either leave the app idle for its 10-minute inactivity timeout, or push any commit to trigger a deploy.
 
 A subdomain rather than the root domain keeps this app's sending reputation separate from your main mail. Note that **until a sending domain is onboarded you can only send to verified destination addresses** in the account, which is no use for real signups; after onboarding, any recipient works. Arbitrary recipients need Workers Paid (which Containers already requires): 3,000 messages a month included, then $0.35 per 1,000. Sends to verified destinations are always free.
 

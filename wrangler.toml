@@ -47,7 +47,7 @@ migrations_dir = "cloudflare/migrations"
 #
 # Before this can deliver anything:
 #   1. pnpm exec wrangler email sending enable mail.<your-domain>
-#   2. Add the DNS records it asks for (pnpm exec wrangler email sending dns)
+#   2. Check the DNS records (pnpm exec wrangler email sending dns get <domain>)
 #   3. pnpm exec wrangler secret put MAIL_FROM   # e.g. auth@mail.<your-domain>
 #
 # MAIL_FROM is the switch for the whole path: until it is set, the binding goes
