@@ -152,6 +152,20 @@ defmodule App.D1 do
   end
 
   @doc """
+  Returns who `owner_id`'s room is shared with (rows carry the member's
+  `"email"`), or `{:error, :not_found}` when the room is not theirs.
+  """
+  @spec list_room_memberships(String.t(), integer()) :: {:ok, [map()]} | {:error, term()}
+  def list_room_memberships(slug, owner_id) when is_binary(slug) and is_integer(owner_id) do
+    query = URI.encode_query(%{"room_slug" => slug, "owner_id" => owner_id})
+
+    case request(:get, "/room_memberships?" <> query) do
+      {:ok, %{"memberships" => rows}} -> {:ok, rows}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  @doc """
   Shares `owner_id`'s room with `member_id`.
 
   `{:error, :not_found}` when the room does not exist, is not `owner_id`'s,
