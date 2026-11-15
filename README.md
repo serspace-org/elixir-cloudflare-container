@@ -42,8 +42,9 @@ Everything the container needs from Cloudflare arrives through a **private gatew
 | `/users/log-out` | log out (`DELETE`) |
 | `/users/settings` | change email and password; requires sudo mode |
 | `/tasks` | D1-backed CRUD demo (LiveView); requires a logged-in user, and each user sees only their own tasks |
-| `/chat`, `/chat/:room` | chat demo on LiveView's `/live` socket — needs an account |
+| `/chat`, `/chat/:room` | chat demo on LiveView's `/live` socket — needs an account; rooms can be owned and private (see `/rooms`) |
 | `/probe`, `/probe/:room` | same chat room over a raw `Phoenix.Channel` on `/socket` — needs an account |
+| `/rooms` | create, share and manage owned chat rooms ([details](docs/realtime.md#owned-and-shared-rooms)) |
 | `/health` | readiness probe used by the Durable Object — unauthenticated, never redirects |
 | `/health/sockets` | socket/node diagnostics as JSON; takes an optional `?room=` |
 | `/dev/dashboard`, `/dev/mailbox` | LiveDashboard and the Swoosh mailbox preview — **dev only** (`:dev_routes`) |

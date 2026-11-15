@@ -1,0 +1,166 @@
+<div class="mx-auto max-w-2xl px-4 py-10">
+  <%!-- This page doesn't wrap itself in Layouts.app (matching /chat and
+        /tasks), so render the flash group directly — share errors arrive
+        as flashes. --%>
+  <Layouts.flash_group flash={@flash} />
+  <h1 class="text-2xl font-bold tracking-tight">Rooms</h1>
+  <p class="mt-1 text-sm text-zinc-500">
+    Chats you own or that were shared with you, persisted in Cloudflare D1.
+    A private room admits only you and the accounts you share it with; a
+    link-open room admits anyone who has the link.
+  </p>
+  <p class="mt-1 text-sm text-zinc-500">
+    Signed in as {@current_scope.user.email} &middot;
+    <.link navigate={~p"/chat"} class="underline hover:text-zinc-900">Open the lobby</.link>
+  </p>
+
+  <%= unless @d1_ready do %>
+    <div class="mt-8 rounded-lg border border-yellow-300 bg-yellow-50 p-4 text-sm text-yellow-800">
+      <p class="font-semibold">D1 is not configured or unreachable from the container.</p>
+      <p class="mt-2">
+        Owned rooms need the database. See <em>Database (Cloudflare D1)</em>
+        in <code>docs/setup.md</code>.
+      </p>
+    </div>
+  <% else %>
+    <form phx-submit="create" class="mt-8 flex flex-wrap gap-2">
+      <input
+        type="text"
+        name="name"
+        placeholder="Room name (optional)"
+        maxlength="160"
+        class="flex-1 rounded-md border border-zinc-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-500"
+      />
+      <select
+        name="visibility"
+        class="rounded-md border border-zinc-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-500"
+      >
+        <option value="private">Private</option>
+        <option value="link">Link-open</option>
+      </select>
+      <button
+        type="submit"
+        class="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700"
+      >
+        Create room
+      </button>
+    </form>
+
+    <%= if @rooms == [] do %>
+      <p class="mt-8 text-sm text-zinc-500">
+        Nothing here yet — create your first room above. (The public rooms under
+        <.link navigate={~p"/chat"} class="underline">/chat</.link>
+        don't need one: any link is a room.)
+      </p>
+    <% else %>
+      <ul class="mt-8 divide-y divide-zinc-200 border-t border-zinc-200">
+        <li :for={room <- @rooms} id={"room-#{room.slug}"} class="py-3">
+          <div class="flex flex-wrap items-center gap-3">
+            <.link navigate={~p"/chat/#{room.slug}"} class="text-sm font-medium underline">
+              {room.name || room.slug}
+            </.link>
+            <span class="font-mono text-xs text-zinc-400">{room.slug}</span>
+            <span class={[
+              "rounded-full px-2 py-0.5 text-xs",
+              room.visibility == "private" && "bg-zinc-100 text-zinc-700",
+              room.visibility == "link" && "bg-emerald-50 text-emerald-700"
+            ]}>
+              {if room.visibility == "private", do: "private", else: "link-open"}
+            </span>
+            <span :if={room.role == :member} class="text-xs text-zinc-500">shared with you</span>
+
+            <span class="ml-auto flex items-center gap-3">
+              <%= if room.role == :owner do %>
+                <button
+                  phx-click="share_panel"
+                  phx-value-slug={room.slug}
+                  class="text-sm text-zinc-600 underline hover:text-zinc-900"
+                >
+                  Share
+                </button>
+                <button
+                  phx-click="toggle_visibility"
+                  phx-value-slug={room.slug}
+                  class="text-sm text-zinc-600 underline hover:text-zinc-900"
+                >
+                  {if room.visibility == "private", do: "Make link-open", else: "Make private"}
+                </button>
+                <button
+                  phx-click="delete"
+                  phx-value-slug={room.slug}
+                  data-confirm="Delete this room and its messages?"
+                  class="text-sm text-red-600 underline hover:text-red-800"
+                >
+                  Delete
+                </button>
+              <% else %>
+                <button
+                  phx-click="leave"
+                  phx-value-slug={room.slug}
+                  data-confirm="Leave this room?"
+                  class="text-sm text-red-600 underline hover:text-red-800"
+                >
+                  Leave
+                </button>
+              <% end %>
+            </span>
+          </div>
+
+          <div
+            :if={@sharing_slug == room.slug}
+            id={"share-#{room.slug}"}
+            class="mt-3 rounded-lg border border-zinc-200 bg-zinc-50 p-4"
+          >
+            <div class="flex items-center">
+              <p class="text-sm font-medium">Shared with</p>
+              <button phx-click="close_share" class="ml-auto text-sm text-zinc-500 underline">
+                Close
+              </button>
+            </div>
+
+            <%= if @members == [] do %>
+              <p class="mt-2 text-sm text-zinc-500">Nobody yet.</p>
+            <% else %>
+              <ul class="mt-2 space-y-1">
+                <li :for={member <- @members} class="flex items-center gap-3 text-sm">
+                  <span>{member.email}</span>
+                  <button
+                    phx-click="revoke"
+                    phx-value-slug={room.slug}
+                    phx-value-user-id={member.user_id}
+                    data-confirm={"Revoke #{member.email}'s access?"}
+                    class="ml-auto text-sm text-red-600 underline hover:text-red-800"
+                  >
+                    Revoke
+                  </button>
+                </li>
+              </ul>
+            <% end %>
+
+            <form phx-submit="share" class="mt-3 flex gap-2">
+              <input type="hidden" name="slug" value={room.slug} />
+              <input
+                type="email"
+                name="email"
+                placeholder="teammate@example.com"
+                required
+                maxlength="160"
+                class="flex-1 rounded-md border border-zinc-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-500"
+              />
+              <button
+                type="submit"
+                class="rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-white"
+              >
+                Share
+              </button>
+            </form>
+            <p class="mt-2 text-xs text-zinc-500">
+              Sharing works with existing accounts only — there is no invitation
+              email. For anyone else, make the room link-open and send the link.
+            </p>
+          </div>
+        </li>
+      </ul>
+    <% end %>
+  <% end %>
+</div>

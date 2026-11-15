@@ -45,12 +45,15 @@ defmodule AppWeb.ChatLive do
          |> put_flash(:error, "You don't have access to that room.")
          |> push_navigate(to: ~p"/chat")}
 
-      _ok_or_degraded ->
-        mount_room(room, scope, socket)
+      {:ok, access} ->
+        mount_room(room, scope, access, socket)
+
+      {:error, _degraded} ->
+        mount_room(room, scope, %{room: nil, role: :link}, socket)
     end
   end
 
-  defp mount_room(room, scope, socket) do
+  defp mount_room(room, scope, access, socket) do
     {messages, d1_ready} =
       case Chat.recent_messages(scope, room) do
         {:ok, messages} -> {messages, true}
@@ -78,6 +81,10 @@ defmodule AppWeb.ChatLive do
      |> assign(
        page_title: "Chat · #{room}",
        room: room,
+       # The room's row (nil for an implicit link room) and this caller's
+       # role in it — what lets the template say who the share link admits.
+       chat_room: access.room,
+       room_role: access.role,
        share_url: url(~p"/chat/#{room}"),
        probe_url: url(~p"/probe/#{room}"),
        nickname: Chat.sender_name(scope),
