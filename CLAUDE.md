@@ -28,7 +28,7 @@ Seven pieces that only make sense together:
 
 3. **`D1Gateway` (also `src/index.ts`) — the database path.** Before starting the container, the DO registers `container.interceptOutboundHttp("d1.internal", ctx.exports.D1Gateway(...))`. Phoenix then talks to D1 by making plain HTTP calls to `http://d1.internal/tasks...` (`App.D1`, using `Req`). Nothing is exposed publicly and no DB credentials exist in the image. This requires `compatibility_flags = ["enable_ctx_exports"]` in `wrangler.toml`, and the gateway is only registered when `env.DB` exists.
 
-   **Adding a table/endpoint means editing four places in lockstep**: a SQL migration in `cloudflare/migrations/`, a route + parameterized query in `D1Gateway`, a client function in `app/lib/app/d1.ex`, and the same route in `App.D1.LocalGateway.Router` (the dev/test stand-in — drift between the two makes local runs lie about production). Keep all SQL parameterized (`?1`-style binds). `tasks`, `messages`, `rooms`, `room_memberships`, `users` and `users_tokens` are all wired this way — copy any of them.
+   **Adding a table/endpoint means editing four places in lockstep**: a migration (authored as an Ecto migration in `app/priv/migration_repo/migrations/`, then exported to `cloudflare/migrations/` with `mix d1.gen_migrations` — see point 4), a route + parameterized query in `D1Gateway`, a client function in `app/lib/app/d1.ex`, and the same route in `App.D1.LocalGateway.Router` (the dev/test stand-in — drift between the two makes local runs lie about production). Keep all SQL parameterized (`?1`-style binds). `tasks`, `messages`, `rooms`, `room_memberships`, `users` and `users_tokens` are all wired this way — copy any of them.
 
    **`tasks` is owned data, and ownership is enforced in SQL.** Every task route takes a `user_id` (query string, or the body on `POST`) and binds it alongside the id in every statement, so another user's task is a 404 rather than a leak — that filter is the only thing standing between two accounts, so don't drop it from a statement when adding one. `App.Tasks` takes an `App.Accounts.Scope` as its first argument and matches it, so a scope with no user raises rather than quietly reaching for someone else's rows, and `/tasks` lives in the `:require_authenticated_user` live session. Migration `0004` added `tasks.user_id` nullable on purpose (additive, so the old version keeps serving during a deploy); rows created before it have a NULL owner and are therefore invisible.
 
@@ -36,7 +36,7 @@ Seven pieces that only make sense together:
 
    `PATCH /users/:id` is the only route that writes more than one statement: it updates the user and optionally deletes their tokens inside a D1 `batch` (one implicit transaction), mirrored locally by `App.D1.LocalGateway.transaction/1`. That batch is what replaces the `Repo.transact/1` the auth generator relied on — don't split it into two requests.
 
-4. **D1 is not an Ecto repo.** `App.Tasks.Task` is an `embedded_schema` used purely for casting/validation; `App.Tasks` applies the changeset with `Changeset.apply_action/2` and persists via `App.D1`. `App.Accounts.User` and `App.Accounts.UserToken` follow the same pattern. `mix ecto.gen.migration` / `mix ecto.migrate` do **not** apply to D1 data. `App.Repo` (Postgres) and `App.Release.migrate` are vestigial — both are no-ops unless `DATABASE_URL` is set (see `App.Application.start/2`, which only supervises `App.Repo` when that env var exists).
+4. **D1 is not an Ecto repo.** `App.Tasks.Task` is an `embedded_schema` used purely for casting/validation; `App.Tasks` applies the changeset with `Changeset.apply_action/2` and persists via `App.D1`. `App.Accounts.User` and `App.Accounts.UserToken` follow the same pattern. `mix ecto.migrate` does **not** apply to D1 data — there is no Ecto adapter for D1 — but migrations are still *authored* with the Ecto migration system: write an Ecto migration in `app/priv/migration_repo/migrations/` (`NNNN_snake_name.exs`, next zero-padded version), run `mix d1.gen_migrations`, and commit both it and the `cloudflare/migrations/NNNN_snake_name.sql` it exports; Wrangler applies the exported file to D1 and `App.D1.LocalGateway` applies it locally. Never edit or regenerate a `.sql` that already shipped (D1 tracks applied migrations by file name); `App.D1.MigrationParityTest` fails the suite if the two expressions of the schema drift. The exporter runs the migrations through `ecto_sqlite3` (dev/test dep) against a scratch SQLite database via `App.MigrationRepo`, which is never supervised. `App.Repo` (Postgres) and `App.Release.migrate` are vestigial — both are no-ops unless `DATABASE_URL` is set (see `App.Application.start/2`, which only supervises `App.Repo` when that env var exists).
 
 5. **`App.D1.LocalGateway` — local persistence without Docker.** Compiled only outside `:prod` (Exqlite is a dev/test dep) and started only when `:d1_local_gateway` is configured, which `config/dev.exs` does alongside pointing `:d1_url` at `http://127.0.0.1:4100`. It serves `D1Gateway`'s HTTP contract from `app/priv/d1_local.sqlite3`, applying `cloudflare/migrations/*.sql` on boot (idempotent, tracked in a `local_migrations` table) — so `mix phx.server` gets real, restart-surviving persistence and the migrations get exercised locally. `App.Application` reaches it through a module attribute (`@local_d1`) so `:prod` never compiles a reference to a module that isn't there. It does **not** cover the `d1.internal` outbound intercept or real D1; that still needs `wrangler dev`.
 
@@ -75,6 +75,8 @@ mix test test/path_test.exs:42 # single test
 mix test --failed
 mix precommit                  # compile --warnings-as-errors + deps.unlock --unused + format + test
 mix format
+mix d1.gen_migrations          # export cloudflare/migrations/*.sql from the Ecto migrations
+                               # in priv/migration_repo/migrations (see point 4 above)
 ```
 
 Worker / Cloudflare (run from the repo root; `pnpm` is the package manager):
@@ -82,7 +84,8 @@ Worker / Cloudflare (run from the repo root; `pnpm` is the package manager):
 ```bash
 pnpm exec wrangler dev                                                  # local Worker (reads .dev.vars)
 pnpm exec wrangler deploy                                               # see caveat below
-pnpm exec wrangler d1 migrations create phoenix-cf-container-db <name>
+pnpm exec wrangler d1 migrations create phoenix-cf-container-db <name>   # don't: author an Ecto
+                                        # migration + mix d1.gen_migrations instead (point 4)
 pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --local
 pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --remote
 pnpm exec wrangler tail                                                 # Worker logs
