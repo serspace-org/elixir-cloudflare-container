@@ -8,17 +8,40 @@ This repo is a work in progress.
 
 ```
 Client (HTTPS) → Cloudflare Worker → Durable Object → Container (Phoenix on :4000)
-                                                        ↓
-                                            Private D1 gateway (Worker)
-                                                        ↓
-                                              Cloudflare D1 database
+                                                               │
+                        ┌──────────────────────────────────────┴───────────┐
+                        │ outbound HTTP intercepts (container-only DNS)    │
+                        ↓                                                 ↓
+            http://d1.internal                                http://mail.internal
+            D1Gateway (WorkerEntrypoint)                      MailGateway (WorkerEntrypoint)
+                        ↓                                                 ↓
+            Cloudflare D1 (`DB` binding)                 Email Sending (`EMAIL` binding)
 ```
 
 The Worker starts the container on first request, polls `/health` until it's ready, then proxies all HTTP and WebSocket traffic to the Phoenix app on port 4000.
 
-Database access goes through a private gateway inside the Worker: Phoenix makes plain HTTP requests to the virtual hostname `d1.internal`, which the Worker intercepts and serves with its `DB` D1 binding (see `D1Gateway` in `src/index.ts`). The database is never exposed to the public internet and no database credentials ship in the container image.
+Everything the container needs from Cloudflare arrives through a **private gateway** rather than a credential. Phoenix makes plain HTTP calls to a hostname that resolves only inside the container, the Worker intercepts it, and a `WorkerEntrypoint` serves it using a binding. Nothing is exposed publicly and **no API tokens or database credentials ship in the image**. See [The gateway pattern](#the-gateway-pattern).
 
 In local development there is no Worker, so `App.D1.LocalGateway` serves the same HTTP contract from a local SQLite file. See [Local development](#local-development).
+
+### The gateway pattern
+
+Two gateways exist today and both follow the same shape, so a third should too:
+
+| Gateway | Hostname | Binding | Elixir client |
+| --- | --- | --- | --- |
+| `D1Gateway` | `d1.internal` | `DB` (D1) | `App.D1` |
+| `MailGateway` | `mail.internal` | `EMAIL` (Email Sending) | `App.Mailer.Gateway` |
+
+Both are registered with `container.interceptOutboundHttp(...)` in `ElixirContainer.startAndWait()` before the container starts, and both are only registered when their binding is configured — so a missing binding degrades a feature rather than breaking the app.
+
+Three rules, each of which was learned by shipping a bug:
+
+1. **A new route touches four places in lockstep** — the SQL migration, the route in the Worker gateway, the client function in Elixir, and the same route in `App.D1.LocalGateway.Router` (the dev/test stand-in). Drift between the Worker gateway and the local one makes local runs lie about production.
+2. **JSON has no `undefined`, so `null` means "absent".** Elixir sends `null` for a field it has no value for. A gateway reader that treats `null` as *invalid* rejects real messages; use the `readOptional*` helpers. D1 goes further and **throws** on `undefined` in `bind()`, so nullable columns need `bindable()`.
+3. **Never return a rejection without logging it.** A 400 from a gateway is a normal `Response`, so the Worker invocation still reports `outcome: ok` — in `wrangler tail` that is indistinguishable from success. Every rejection path names what was wrong, and every successful send logs its message id.
+
+The gateways have no automated tests against the real bindings — see [Known gaps](#known-gaps).
 
 ## What's here
 
@@ -27,12 +50,14 @@ In local development there is no Worker, so `App.D1.LocalGateway` serves the sam
   - `App.Tasks` — CRUD context over D1 (`/tasks`)
   - `App.Chat` — chat context over D1, broadcast with `Phoenix.PubSub` (`/chat/:room`, `/probe/:room`)
   - `App.Accounts` — `mix phx.gen.auth` password authentication, moved off Ecto onto D1
+  - `App.Mailer.Gateway` — Swoosh adapter that sends through the Worker's private mail gateway
   - `App.D1.LocalGateway` — dev/test stand-in for the Worker's D1 gateway, backed by local SQLite
   - `app/AGENTS.md` — Phoenix/Elixir/LiveView coding rules for everything under `app/`
-- **`src/index.ts`** — Worker + Durable Object: container lifecycle, HTTP/WebSocket proxying, and the `D1Gateway` entrypoint
+- **`src/index.ts`** — Worker + Durable Object: container lifecycle, HTTP/WebSocket proxying, and the `D1Gateway` and `MailGateway` entrypoints
+- **`docs/troubleshooting.md`** — how to see what the Worker, container, database and mailer are actually doing, plus a log of the bugs this setup has already produced
 - **`cloudflare/migrations/`** — SQL migrations applied to D1 with Wrangler
 - **`Dockerfile`** — Multi-stage build: compiles an Elixir release with assets, copies into minimal Alpine runtime
-- **`wrangler.toml`** — Wrangler config (container, Durable Object, D1 binding)
+- **`wrangler.toml`** — Wrangler config (container, Durable Object, D1 and Email Sending bindings)
 - **`scripts/ws-smoke.mjs`** — post-deploy WebSocket/channel smoke test (`pnpm ws:smoke <url>`)
 - **`.github/workflows/deploy.yml`** — CI workflow that deploys on push to `main`
 
@@ -89,14 +114,29 @@ pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --remote
 
 Until the binding is configured, the Worker skips the gateway entirely: `/tasks` shows a setup notice and `/chat` runs in ephemeral mode, so nothing else breaks.
 
-### 3. GitHub repo secrets
+### 3. Email sending (optional)
+
+Skip this and the app works — registration and password login send no email at all. Without it, the magic-link and email-change flows stay hidden rather than failing; see [Mailer](#mailer).
+
+```bash
+pnpm exec wrangler email sending enable mail.example.com      # a subdomain, not the root
+pnpm exec wrangler email sending dns get mail.example.com     # verify SPF/DKIM/DMARC
+pnpm exec wrangler email sending list                         # confirm it is onboarded
+pnpm exec wrangler secret put MAIL_FROM                       # e.g. auth@mail.example.com
+```
+
+`enable` publishes the DNS records itself when the zone is on Cloudflare. **Use a subdomain, never the zone apex**: Email Sending puts the bounce MX on the domain you onboard, so onboarding the apex collides with whatever already receives mail there.
+
+`MAIL_FROM` is the switch for the whole mail path, and it reaches Phoenix through `container.start()` — so **the container has to restart before it takes effect**. Setting a secret publishes a new Worker version but leaves the running container alone. Deploy, or leave the app idle for its inactivity timeout.
+
+### 4. GitHub repo secrets
 
 In your GitHub repo settings, add:
 
 - `CLOUDFLARE_API_TOKEN` — a Cloudflare API token with Workers, Containers and D1 edit permissions (D1 because CI applies migrations before deploying)
 - `CLOUDFLARE_ACCOUNT_ID` — your Cloudflare account ID
 
-Optionally add a repo **variable** `SMOKE_URL` (the deployed hostname) to run the WebSocket smoke test after each deploy. Without it, that CI step is skipped.
+Optionally add a repo **variable** `SMOKE_URL` (the deployed hostname) to run the smoke test after each deploy. Without it, that CI step is skipped — which also means the form-redirect regression check in `scripts/ws-smoke.mjs` never runs, so setting it is worth the minute.
 
 ## Local development
 
@@ -208,6 +248,19 @@ Registration taking a password is the one change with a security consequence, an
 
 Accounts therefore stay **unconfirmed** until a mailer exists; nothing in the app gates on `confirmed_at` yet.
 
+### Confirming an account
+
+Registration leaves `confirmed_at` empty, and nothing in the app gates on it — so this only matters when you want magic-link login to work.
+
+The order is not guessable, which is a usability problem rather than a bug:
+
+1. `/users/log-in` → "Log in with email" sends an email titled **"Confirmation instructions"**, not a login link, because the account is unconfirmed (`UserNotifier.deliver_login_instructions/2` branches on it).
+2. Opening that link **while logged out is refused** — "Please log in with your password to confirm your account." The account has a password and is unconfirmed, which is exactly the credential pre-stuffing case the mitigation blocks.
+3. Log in with the password first, then open the link in the same browser, and it confirms the account.
+4. From then on "Log in with email" sends a real magic link that works on its own.
+
+The clean fix is an "unconfirmed — confirm your email" banner with a resend button shown after password login, so confirmation happens on the natural path while the user is already authenticated. Not implemented; see [Known gaps](#known-gaps).
+
 ### Mailer
 
 Account email goes through a **private mail gateway in the Worker**, the same arrangement the database uses: the container POSTs to `http://mail.internal/send`, a hostname that resolves only inside it, and `MailGateway` (`src/index.ts`) does the sending with Cloudflare Email Service via the Worker's `EMAIL` binding.
@@ -247,9 +300,15 @@ Development keeps `Swoosh.Adapters.Local` and the `/dev/mailbox` preview — bet
 
 Email Sending is in **open beta**. Treat delivery as best-effort: password login stays the primary path, which is why registration does not depend on email at all.
 
-#### Still missing: password reset
+Every send is logged by the gateway, so delivery questions are answerable from `wrangler tail`:
 
-The flow that matters once email works. It is what lets someone recover their account when an attacker registered their address first and set a password — the credential pre-stuffing case the registration design obliges us to cover (see Authentication above). Nothing else is blocked on the mailer.
+```
+MailGateway sent <abc…@mail.example.com> to *@example.com
+MailGateway rejected a message, invalid: replyTo
+MailGateway cannot send, missing: MAIL_FROM
+```
+
+The message id is the key into Cloudflare's own records. The recipient's *domain* is logged but not the address — user addresses do not belong in Worker logs.
 
 ## Chat (WebSocket + Channels) demo
 
@@ -310,6 +369,32 @@ curl https://<your-host>/health
 Then open `/tasks` for the D1-backed CRUD demo and `/chat` for the WebSocket demo.
 
 The first request may take 5–15 seconds (container cold start). Subsequent requests are instant while the container is warm.
+
+## Troubleshooting
+
+[`docs/troubleshooting.md`](docs/troubleshooting.md) is the runbook: how to read the Worker's logs, confirm a deploy actually reached users, inspect D1 and the mail queue directly, and drive a LiveView over a raw socket when you need to reproduce something without a browser. It also logs the bugs this setup has already produced and what each one taught, because every one of them looked like something else first.
+
+The three checks that answer most questions:
+
+```bash
+pnpm exec wrangler tail phoenix-cf-container --format json   # what the Worker is doing, live
+curl -s https://<host>/health/sockets                        # node, uptime, d1_ready
+pnpm exec wrangler d1 execute DB --remote --json \
+  --command "SELECT id, email, confirmed_at FROM users"      # what is actually stored
+```
+
+A container's `node_uptime_ms` older than your last deploy means the old image is still serving — see [How a deploy actually reaches users](#how-a-deploy-actually-reaches-users).
+
+## Known gaps
+
+Honest list, so nobody mistakes this for finished:
+
+- **The Worker's gateways have no tests against the real bindings.** `D1Gateway` and `MailGateway` are only exercised through Elixir, against a `Req.Test` stub or the local SQLite stand-in, neither of which can see the Worker's code. Two production defects came from exactly that blind spot (both in the log in `docs/troubleshooting.md`). A Miniflare harness is the missing piece.
+- **No password reset.** It is what lets someone recover when an attacker registered their address first and set a password — the credential pre-stuffing case the registration design obliges us to cover. Needs the mailer, which now exists.
+- **No "confirm your email" prompt**, so the confirmation order above has to be known rather than discovered.
+- **Email Sending is in open beta.** Treat delivery as best-effort; password login is deliberately the primary path.
+- **A deploy costs one cold start and drops open WebSockets.** The container is replaced rather than drained, because a Durable Object has exactly one container and cannot run both.
+- **`package-lock.json` is a stub** while `deploy.yml` installs with `npm install`, so production installs are not pinned. The CI workflow uses pnpm with `--frozen-lockfile`.
 
 ## Notes
 
