@@ -26,14 +26,17 @@ pnpm exec wrangler deploy
 Migrations are **authored with the Ecto migration system and exported to SQL**. D1 is SQLite, so the Ecto migrator runs the migration against a scratch SQLite database (via `ecto_sqlite3`, a dev/test-only dep) and the SQL it executes is exported as the versioned file Wrangler applies:
 
 ```bash
-# 1. Author: add app/priv/migration_repo/migrations/NNNN_snake_name.exs
-#    (next zero-padded version) — an ordinary Ecto migration.
-cd app && mix d1.gen_migrations        # 2. Export cloudflare/migrations/NNNN_snake_name.sql
-mix test                               # 3. The parity test proves both paths build the same schema
+cd app
+mix ecto.gen.migration -r App.MigrationRepo add_whatever   # 1. the normal Phoenix generator
+# ... edit the generated migration like any Ecto migration ...
+mix d1.gen_migrations    # 2. export cloudflare/migrations/<version>_add_whatever.sql
+mix test                 # 3. the parity test proves both paths build the same schema
 
 pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --remote   # by hand, rarely needed
-just migrate-local      # the same thing against the local D1, by binding name
+just migrate-local       # the same thing against the local D1, by binding name
 ```
+
+The generator's timestamped versions sort after the original `000N` files in every applier (Wrangler, the local gateway, Ecto's migrator), so the two naming styles coexist; just don't hand-number new files below the timestamps.
 
 Commit the `.exs` and the exported `.sql` together. **Never edit or regenerate a `.sql` that already shipped** — D1 (and the local gateway) track applied migrations by file name, so a changed file is either skipped silently or breaks the deploy; the exporter refuses to overwrite existing files for this reason. `App.D1.MigrationParityTest` fails the suite if the authored migrations and the exported SQL ever disagree. (Don't use `wrangler d1 migrations create` — it would make a `.sql` with no authored source.)
 
