@@ -49,7 +49,9 @@ defmodule App.D1.LocalGatewayTest do
              "0001_create_tasks.sql",
              "0002_create_messages.sql",
              "0003_create_users_auth_tables.sql",
-             "0004_scope_tasks_to_users.sql"
+             "0004_scope_tasks_to_users.sql",
+             "0005_create_rooms.sql",
+             "0006_attribute_messages_to_users.sql"
            ]
   end
 
