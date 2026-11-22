@@ -312,7 +312,7 @@ defmodule App.AccountsTest do
 
       # Creating the same token in the same context should fail, which is what
       # the unique index on (context, token) is for.
-      assert {:error, :email_taken} =
+      assert {:error, :conflict} =
                App.D1.create_user_token(%{
                  user_id: user_fixture().id,
                  token: token,

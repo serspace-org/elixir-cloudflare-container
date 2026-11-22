@@ -69,6 +69,10 @@ defmodule AppWeb.Router do
       live "/chat", ChatLive, :index
       live "/chat/:room", ChatLive, :index
 
+      # Owned and shared chat rooms — the management surface for the
+      # ownership /chat already carries.
+      live "/rooms", RoomLive, :index
+
       live "/users/settings", UserLive.Settings, :edit
       live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email
     end

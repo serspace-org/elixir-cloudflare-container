@@ -21,8 +21,19 @@ Both chat clients are room-scoped, so a session is just a URL you can hand to so
 | `/chat` | LiveView client in the default `lobby` room |
 | `/chat/:room` | LiveView client in a named room |
 | `/probe/:room` | raw-channel client in the same room |
+| `/rooms` | manage owned and shared rooms (requires an account) |
 
 **New session** on `/chat` generates a fresh room slug and navigates to it; the share box next to it holds the link to send. Rooms are isolated — messages, history and presence are all per-room. Room names are validated against `^[a-z0-9][a-z0-9-]{0,63}$` (`App.Chat.valid_room?/1`) because the name reaches both a channel topic and the database; anything else falls back to `lobby`. Presence is keyed by user id, so two tabs of the same account are one person in the roster.
+
+### Owned and shared rooms
+
+Chat requires an account, but a room opened through a link stays what it always was: open to anyone signed in who holds the slug. A user can additionally **create** rooms at `/rooms`, which claims a slug in the `rooms` table:
+
+- A **private** room admits only its owner and the accounts it is shared with. Everyone else — including a signed-in stranger holding the link — is denied: the LiveView bounces to `/chat` with a flash, and a channel join is refused with `"unauthorized"` (deliberately distinct from `"unknown room"`).
+- A **link-open** room behaves like an unclaimed one but has an owner, who can rename it, flip visibility, or delete it (deleting takes the transcript with it, in one gateway batch).
+- **Sharing is with existing accounts only** — there is no invitation email (delivery may not even be configured; see [Authentication](authentication.md)). Link visibility is the escape hatch for everyone else. Revoking a member broadcasts `{:access_revoked, id}` so their live sessions disconnect immediately — authorization is otherwise only checked on entry.
+
+The raw `/socket` carries the identity: the root layout renders a short-lived `Phoenix.Token` for the logged-in user, `channel_probe.js` passes it as the `user_token` connect param, and `AppWeb.UserSocket` resolves it to a scope (no token, or a bad one, refuses the upgrade rather than silently downgrading to anonymous). Authorization itself is enforced in SQL in the Worker's `D1Gateway` — see the ownership rules in [Architecture](architecture.md).
 
 To share a local session with someone on your network, note that dev is bound to loopback — change `http: [ip: {127, 0, 0, 1}]` to `ip: {0, 0, 0, 0}` in `app/config/dev.exs` and give them `http://<your-lan-ip>:4000/chat/<room>`. `check_origin` is already disabled in dev.
 

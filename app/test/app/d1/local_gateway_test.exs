@@ -211,7 +211,7 @@ defmodule App.D1.LocalGatewayTest do
       create_user("ada@example.com")
 
       assert {409, %{"error" => error}} = request(:post, "/users", %{email: "ADA@example.com"})
-      assert error =~ "already been taken"
+      assert error =~ "unique constraint"
     end
 
     test "rejects invalid user attributes" do
@@ -343,6 +343,259 @@ defmodule App.D1.LocalGatewayTest do
       assert {400, _body} = request(:patch, "/users/#{user["id"]}", %{confirmed_at: "nope"})
       assert {400, _body} = request(:patch, "/users/nope", %{email: "a@b.c"})
       assert {404, _body} = request(:patch, "/users/99", %{email: "a@b.c"})
+    end
+  end
+
+  describe "rooms contract" do
+    defp create_room(user, attrs \\ %{}) do
+      params = Map.merge(%{user_id: user["id"], slug: "standup", visibility: "private"}, attrs)
+      assert {201, %{"room" => room}} = request(:post, "/rooms", params)
+      room
+    end
+
+    test "an unclaimed slug is an implicit link room, as every room used to be" do
+      sender = create_user("ada@example.com")
+      assert {404, _body} = request(:get, "/rooms/standup")
+
+      # No row means no owner to deny anyone, so any signed-in account may
+      # read and write the slug — the behavior every room had before rooms.
+      assert {201, %{"message" => message}} =
+               request(:post, "/messages", %{
+                 room: "standup",
+                 nickname: "ada",
+                 body: "hi",
+                 user_id: sender["id"]
+               })
+
+      assert message["user_id"] == sender["id"]
+
+      assert {200, %{"messages" => [_message]}} =
+               request(:get, "/messages?room=standup&user_id=#{sender["id"]}")
+    end
+
+    test "rooms round trip with ownership, roles and sharing" do
+      owner = create_user("owner@example.com")
+      member = create_user("member@example.com")
+      room = create_room(owner, %{name: "Standup"})
+
+      assert room["slug"] == "standup"
+      assert room["visibility"] == "private"
+      assert room["name"] == "Standup"
+
+      # The slug is claimed; a second claim is a conflict, not a second row.
+      assert {409, %{"error" => error}} =
+               request(:post, "/rooms", %{
+                 user_id: member["id"],
+                 slug: "standup",
+                 visibility: "link"
+               })
+
+      assert error =~ "unique constraint"
+
+      # 403, not 404: the room exists and denies the viewer — collapsing the
+      # two would make denial read as "unclaimed, come on in".
+      assert {200, %{"role" => "owner"}} =
+               request(:get, "/rooms/standup?user_id=#{owner["id"]}")
+
+      assert {403, _body} = request(:get, "/rooms/standup")
+      assert {403, _body} = request(:get, "/rooms/standup?user_id=#{member["id"]}")
+
+      # Only the owner can share; the invitee must be a real, other account.
+      assert {404, _body} =
+               request(:post, "/room_memberships", %{
+                 room_slug: "standup",
+                 owner_id: member["id"],
+                 user_id: member["id"]
+               })
+
+      assert {404, _body} =
+               request(:post, "/room_memberships", %{
+                 room_slug: "standup",
+                 owner_id: owner["id"],
+                 user_id: owner["id"]
+               })
+
+      assert {404, _body} =
+               request(:post, "/room_memberships", %{
+                 room_slug: "standup",
+                 owner_id: owner["id"],
+                 user_id: 99
+               })
+
+      assert {201, %{"membership" => membership}} =
+               request(:post, "/room_memberships", %{
+                 room_slug: "standup",
+                 owner_id: owner["id"],
+                 user_id: member["id"]
+               })
+
+      assert membership["user_id"] == member["id"]
+
+      assert {409, _body} =
+               request(:post, "/room_memberships", %{
+                 room_slug: "standup",
+                 owner_id: owner["id"],
+                 user_id: member["id"]
+               })
+
+      assert {200, %{"role" => "member"}} =
+               request(:get, "/rooms/standup?user_id=#{member["id"]}")
+
+      assert {200, %{"rooms" => [%{"role" => "owner"}]}} =
+               request(:get, "/rooms?user_id=#{owner["id"]}")
+
+      assert {200, %{"rooms" => [%{"role" => "member"}]}} =
+               request(:get, "/rooms?user_id=#{member["id"]}")
+    end
+
+    test "a private room gates its messages in SQL" do
+      owner = create_user("owner@example.com")
+      member = create_user("member@example.com")
+      stranger = create_user("stranger@example.com")
+      create_room(owner)
+
+      assert {201, _body} =
+               request(:post, "/room_memberships", %{
+                 room_slug: "standup",
+                 owner_id: owner["id"],
+                 user_id: member["id"]
+               })
+
+      denied = %{room: "standup", nickname: "x", body: "hi"}
+      assert {400, _body} = request(:post, "/messages", denied)
+      assert {403, _body} = request(:post, "/messages", Map.put(denied, :user_id, stranger["id"]))
+
+      assert {201, %{"message" => message}} =
+               request(:post, "/messages", Map.put(denied, :user_id, member["id"]))
+
+      assert message["user_id"] == member["id"]
+
+      assert {403, _body} = request(:get, "/messages?room=standup")
+      assert {403, _body} = request(:get, "/messages?room=standup&user_id=#{stranger["id"]}")
+
+      assert {200, %{"messages" => [_owned]}} =
+               request(:get, "/messages?room=standup&user_id=#{owner["id"]}")
+
+      assert {200, %{"messages" => [_message]}} =
+               request(:get, "/messages?room=standup&user_id=#{member["id"]}")
+
+      # Only the owner can change visibility; flipping to link reopens the
+      # room to anyone with the slug.
+      assert {404, _body} =
+               request(:patch, "/rooms/standup?user_id=#{member["id"]}", %{visibility: "link"})
+
+      assert {200, %{"room" => %{"visibility" => "link"}}} =
+               request(:patch, "/rooms/standup?user_id=#{owner["id"]}", %{visibility: "link"})
+
+      assert {200, %{"messages" => [_message]}} = request(:get, "/messages?room=standup")
+    end
+
+    test "listing memberships is the owner's view alone" do
+      owner = create_user("owner@example.com")
+      member = create_user("member@example.com")
+      create_room(owner)
+
+      assert {201, _body} =
+               request(:post, "/room_memberships", %{
+                 room_slug: "standup",
+                 owner_id: owner["id"],
+                 user_id: member["id"]
+               })
+
+      assert {200, %{"memberships" => [row]}} =
+               request(:get, "/room_memberships?room_slug=standup&owner_id=#{owner["id"]}")
+
+      assert row["user_id"] == member["id"]
+      assert row["email"] == "member@example.com"
+
+      # A member (or anyone else) gets the 404 a stranger would.
+      assert {404, _body} =
+               request(:get, "/room_memberships?room_slug=standup&owner_id=#{member["id"]}")
+    end
+
+    test "revoking a member and leaving a room" do
+      owner = create_user("owner@example.com")
+      member = create_user("member@example.com")
+      stranger = create_user("stranger@example.com")
+      create_room(owner)
+
+      share = %{room_slug: "standup", owner_id: owner["id"], user_id: member["id"]}
+      assert {201, _body} = request(:post, "/room_memberships", share)
+
+      # A stranger deletes zero rows; the owner revokes; the member leaves.
+      assert {200, %{"deleted" => 0}} =
+               request(
+                 :delete,
+                 "/room_memberships?room_slug=standup" <>
+                   "&user_id=#{member["id"]}&actor_id=#{stranger["id"]}"
+               )
+
+      assert {200, %{"deleted" => 1}} =
+               request(
+                 :delete,
+                 "/room_memberships?room_slug=standup" <>
+                   "&user_id=#{member["id"]}&actor_id=#{owner["id"]}"
+               )
+
+      assert {403, _body} = request(:get, "/messages?room=standup&user_id=#{member["id"]}")
+
+      assert {201, _body} = request(:post, "/room_memberships", share)
+
+      assert {200, %{"deleted" => 1}} =
+               request(
+                 :delete,
+                 "/room_memberships?room_slug=standup" <>
+                   "&user_id=#{member["id"]}&actor_id=#{member["id"]}"
+               )
+    end
+
+    test "deleting a room takes its messages with it" do
+      owner = create_user("owner@example.com")
+      stranger = create_user("stranger@example.com")
+      create_room(owner, %{visibility: "link"})
+
+      assert {201, _body} =
+               request(:post, "/messages", %{
+                 room: "standup",
+                 nickname: "ada",
+                 body: "hi",
+                 user_id: owner["id"]
+               })
+
+      assert {404, _body} = request(:delete, "/rooms/standup?user_id=#{stranger["id"]}")
+
+      assert {200, %{"deleted" => true}} =
+               request(:delete, "/rooms/standup?user_id=#{owner["id"]}")
+
+      # The slug is unclaimed again — an implicit link room with no history,
+      # not a leak of the deleted room's transcript.
+      assert {404, _body} = request(:get, "/rooms/standup")
+      assert {200, %{"messages" => []}} = request(:get, "/messages?room=standup")
+    end
+
+    test "an unusable viewer is rejected, and a write always needs its author" do
+      assert {400, _body} = request(:get, "/messages?room=standup&user_id=abc")
+
+      assert {400, _body} =
+               request(:post, "/messages", %{
+                 room: "standup",
+                 nickname: "x",
+                 body: "hi",
+                 user_id: "abc"
+               })
+
+      # A read may be unauthenticated as far as the gateway is concerned (an
+      # absent viewer simply reaches no private room), but a write carries its
+      # author: every chat surface requires a logged-in account, so a missing
+      # sender is a bug to surface, not an anonymous visitor to accept. JSON
+      # `null` still reads as "absent" rather than "invalid".
+      assert {400, %{"error" => "user_id is required"}} =
+               request(:post, "/messages", %{
+                 room: "standup",
+                 nickname: "x",
+                 body: "hi",
+                 user_id: nil
+               })
     end
   end
 end

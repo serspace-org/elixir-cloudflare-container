@@ -32,8 +32,30 @@ defmodule AppWeb.ChatLive do
     room = Chat.room_or_default(params["room"])
     scope = socket.assigns.current_scope
 
+    # Rooms can be owned and private (see App.Chat); a room that denies
+    # this caller bounces to the default room rather than rendering an
+    # empty transcript that looks open. Only a real denial bounces — any
+    # other gateway failure mounts and degrades exactly as before, with
+    # the history read reporting d1_ready: false. (No loop risk: slugs are
+    # always generated, so the default room can never be claimed.)
+    case Chat.room_access(scope, room) do
+      {:error, :forbidden} ->
+        {:ok,
+         socket
+         |> put_flash(:error, "You don't have access to that room.")
+         |> push_navigate(to: ~p"/chat")}
+
+      {:ok, access} ->
+        mount_room(room, scope, access, socket)
+
+      {:error, _degraded} ->
+        mount_room(room, scope, %{room: nil, role: :link}, socket)
+    end
+  end
+
+  defp mount_room(room, scope, access, socket) do
     {messages, d1_ready} =
-      case Chat.recent_messages(room) do
+      case Chat.recent_messages(scope, room) do
         {:ok, messages} -> {messages, true}
         {:error, _reason} -> {[], false}
       end
@@ -59,6 +81,10 @@ defmodule AppWeb.ChatLive do
      |> assign(
        page_title: "Chat · #{room}",
        room: room,
+       # The room's row (nil for an implicit link room) and this caller's
+       # role in it — what lets the template say who the share link admits.
+       chat_room: access.room,
+       room_role: access.role,
        share_url: url(~p"/chat/#{room}"),
        probe_url: url(~p"/probe/#{room}"),
        nickname: Chat.sender_name(scope),
@@ -93,8 +119,14 @@ defmodule AppWeb.ChatLive do
          |> assign(durability: durability, error: nil)
          |> push_event("chat:sent", %{})}
 
-      {:error, changeset} ->
+      {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply, assign(socket, error: changeset_message(changeset))}
+
+      {:error, :forbidden} ->
+        {:noreply, assign(socket, error: "you don't have access to this room")}
+
+      {:error, _reason} ->
+        {:noreply, assign(socket, error: "message not delivered")}
     end
   end
 
@@ -122,6 +154,29 @@ defmodule AppWeb.ChatLive do
 
   def handle_info(%Phoenix.Socket.Broadcast{event: "presence_diff"}, socket) do
     {:noreply, assign_presence(socket)}
+  end
+
+  # Membership revoked mid-session (App.Chat.unshare_room/3). Authorization
+  # is otherwise only checked on mount, so without this a revoked member
+  # would keep receiving the room's broadcasts until they reloaded.
+  def handle_info({:access_revoked, user_id}, socket) do
+    case socket.assigns.current_scope do
+      %{user: %{id: ^user_id}} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Your access to this room was revoked.")
+         |> push_navigate(to: ~p"/chat")}
+
+      _other ->
+        {:noreply, socket}
+    end
+  end
+
+  def handle_info({:room_deleted}, socket) do
+    {:noreply,
+     socket
+     |> put_flash(:error, "This room was deleted.")
+     |> push_navigate(to: ~p"/chat")}
   end
 
   ## Helpers
