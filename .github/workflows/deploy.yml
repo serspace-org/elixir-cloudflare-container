@@ -39,9 +39,13 @@ jobs:
 
       # Fails the build if the WebSocket upgrade through the Worker and
       # Durable Object breaks. A browser would silently long-poll instead.
-      # Set the SMOKE_URL repository variable to the deployed hostname.
+      # Set the SMOKE_URL repository variable to the deployed hostname, and
+      # the SMOKE_EMAIL/SMOKE_PASSWORD secrets to an account on it: /socket
+      # requires a login, so the test signs in before connecting.
       - name: WebSocket smoke test
-        if: ${{ vars.SMOKE_URL != '' }}
+        if: ${{ vars.SMOKE_URL != '' && secrets.SMOKE_EMAIL != '' }}
         run: npm run ws:smoke -- "$SMOKE_URL"
         env:
           SMOKE_URL: ${{ vars.SMOKE_URL }}
+          SMOKE_EMAIL: ${{ secrets.SMOKE_EMAIL }}
+          SMOKE_PASSWORD: ${{ secrets.SMOKE_PASSWORD }}

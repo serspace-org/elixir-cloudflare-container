@@ -8,40 +8,44 @@ defmodule AppWeb.UserSocket do
   socket must fail loudly instead of quietly degrading the way the
   LiveView socket would.
 
-  Connections are anonymous — the demo has no accounts.
+  Connections require a logged-in account, like `/chat` and `/probe`
+  themselves. A plain socket cannot read the session — `connect/3` sees only
+  params and connect info — so the page hands back a token signed by
+  `AppWeb.UserAuth.user_socket_token/1`; a missing, expired or forged one is
+  a refused upgrade, and `AppWeb.RoomChannel` can then take the sender from
+  `socket.assigns.scope` rather than from the client.
   """
 
   use Phoenix.Socket
+
+  alias App.Accounts
+  alias App.Accounts.Scope
+  alias App.Chat
+  alias AppWeb.UserAuth
 
   channel "room:*", AppWeb.RoomChannel
 
   @impl true
   def connect(params, socket, _connect_info) do
-    socket =
-      socket
-      |> assign(:nickname, nickname(params))
-      |> assign(:connected_at, System.system_time(:millisecond))
+    with {:ok, user_id} <- UserAuth.verify_user_socket_token(params["user_token"]),
+         %Accounts.User{} = user <- Accounts.get_user(user_id) do
+      scope = Scope.for_user(user)
 
-    {:ok, socket}
-  end
-
-  @impl true
-  def id(_socket), do: nil
-
-  defp nickname(params) do
-    case params["nickname"] do
-      name when is_binary(name) ->
-        case String.trim(name) do
-          "" -> random_nickname()
-          trimmed -> String.slice(trimmed, 0, 64)
-        end
-
-      _other ->
-        random_nickname()
+      {:ok,
+       socket
+       |> assign(:scope, scope)
+       |> assign(:nickname, Chat.sender_name(scope))
+       |> assign(:connected_at, System.system_time(:millisecond))}
+    else
+      _other -> :error
     end
   end
 
-  defp random_nickname do
-    "guest-" <> (:crypto.strong_rand_bytes(3) |> Base.encode16(case: :lower))
-  end
+  # Identifying the socket is what lets logging out close it: `log_out_user/1`
+  # broadcasts "disconnect" on this topic as well as the LiveView one, so a
+  # `/probe` tab left open does not keep sending as an account that has
+  # signed out. `AppWeb.UserAuth.user_socket_topic/1` owns the format.
+  @impl true
+  def id(%{assigns: %{scope: %Scope{user: %Accounts.User{id: user_id}}}}),
+    do: UserAuth.user_socket_topic(user_id)
 end

@@ -45,20 +45,35 @@ defmodule App.D1.LocalGatewayTest do
   test "applies the repo's migrations" do
     assert {:ok, applied} = LocalGateway.query("SELECT name FROM local_migrations ORDER BY name")
 
-    assert Enum.map(applied, & &1["name"]) == [
-             "0001_create_tasks.sql",
-             "0002_create_messages.sql",
-             "0003_create_users_auth_tables.sql",
-             "0004_scope_tasks_to_users.sql"
-           ]
+    # Compared against the directory rather than a hardcoded list, so adding a
+    # migration cannot leave this test asserting yesterday's schema.
+    on_disk =
+      "../cloudflare/migrations/*.sql"
+      |> Path.expand(File.cwd!())
+      |> Path.wildcard()
+      |> Enum.map(&Path.basename/1)
+      |> Enum.sort()
+
+    assert on_disk != []
+    assert Enum.map(applied, & &1["name"]) == on_disk
   end
 
   test "messages round trip the way the Worker's gateway does" do
+    # Messages reference `users (id)`, which SQLite enforces here as D1 does
+    # remotely, so a message needs a real sender row.
+    sender = create_user("ada@example.com")["id"]
+
     assert {201, %{"message" => created}} =
-             request(:post, "/messages", %{room: "lobby", nickname: "ada", body: "hello"})
+             request(:post, "/messages", %{
+               room: "lobby",
+               user_id: sender,
+               nickname: "ada",
+               body: "hello"
+             })
 
     assert created["id"] == 1
     assert created["room"] == "lobby"
+    assert created["user_id"] == sender
     assert created["inserted_at"]
 
     assert {200, %{"messages" => [message]}} = request(:get, "/messages?room=lobby")
@@ -69,8 +84,16 @@ defmodule App.D1.LocalGatewayTest do
   end
 
   test "returns messages oldest first, newest-limited" do
+    sender = create_user("n@example.com")["id"]
+
     for body <- ~w(one two three) do
-      assert {201, _body} = request(:post, "/messages", %{room: "r", nickname: "n", body: body})
+      assert {201, _body} =
+               request(:post, "/messages", %{
+                 room: "r",
+                 user_id: sender,
+                 nickname: "n",
+                 body: body
+               })
     end
 
     assert {200, %{"messages" => messages}} = request(:get, "/messages?room=r&limit=2")
@@ -78,8 +101,19 @@ defmodule App.D1.LocalGatewayTest do
   end
 
   test "rejects an invalid message" do
+    sender = create_user("ada@example.com")["id"]
+
     assert {400, %{"error" => _error}} =
-             request(:post, "/messages", %{room: "lobby", nickname: "ada", body: "  "})
+             request(:post, "/messages", %{
+               room: "lobby",
+               user_id: sender,
+               nickname: "ada",
+               body: "  "
+             })
+
+    # The sender is required, the way `user_id` is on every task route.
+    assert {400, %{"error" => "user_id is required"}} =
+             request(:post, "/messages", %{room: "lobby", nickname: "ada", body: "hello"})
 
     assert {400, %{"error" => "room is required"}} = request(:get, "/messages")
   end

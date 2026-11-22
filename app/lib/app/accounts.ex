@@ -108,6 +108,21 @@ defmodule App.Accounts do
     end
   end
 
+  @doc """
+  Gets a single user by id, or `nil` when there is no such user.
+
+  The non-raising counterpart of `get_user!/1`, for callers that must answer
+  a bad id with a refusal rather than a crash — `AppWeb.UserSocket`, whose
+  caller is an unauthenticated WebSocket upgrade.
+  """
+  @spec get_user(term()) :: User.t() | nil
+  def get_user(id) do
+    case D1.get_user(id) do
+      {:ok, row} -> to_user(row)
+      {:error, _reason} -> nil
+    end
+  end
+
   ## User registration
 
   @doc """

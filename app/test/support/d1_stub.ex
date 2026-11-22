@@ -35,6 +35,37 @@ defmodule App.D1Stub do
   has to be visible from LiveView and channel processes.
   """
   def stub_d1_sqlite!(_context \\ %{}) do
+    plug = sqlite_plug!()
+    stub_d1(plug)
+
+    :ok
+  end
+
+  @doc """
+  Like `stub_d1_sqlite!/1`, but with the message routes unreachable.
+
+  For the chat pages' degraded mode: they have to stay usable when the
+  gateway cannot be reached, which is only an interesting test if the user
+  behind the session can still be read — so accounts answer from SQLite
+  while `/messages` refuses the connection.
+  """
+  def stub_d1_sqlite_without_chat!(_context \\ %{}) do
+    plug = sqlite_plug!()
+
+    stub_d1(fn conn ->
+      if String.starts_with?(conn.request_path, "/messages") do
+        Req.Test.transport_error(conn, :econnrefused)
+      else
+        plug.(conn)
+      end
+    end)
+
+    :ok
+  end
+
+  # Starts a throwaway gateway over a fresh SQLite file and returns a
+  # Plug-style function that serves its HTTP contract.
+  defp sqlite_plug! do
     # mix test runs from app/, and the migrations live at the repo root.
     migrations = Path.expand("../cloudflare/migrations", File.cwd!())
 
@@ -48,9 +79,7 @@ defmodule App.D1Stub do
     )
 
     opts = App.D1.LocalGateway.Router.init([])
-    stub_d1(fn conn -> App.D1.LocalGateway.Router.call(conn, opts) end)
-
-    :ok
+    fn conn -> App.D1.LocalGateway.Router.call(conn, opts) end
   end
 
   @doc """

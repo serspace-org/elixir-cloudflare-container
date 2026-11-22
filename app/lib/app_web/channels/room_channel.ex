@@ -2,6 +2,10 @@ defmodule AppWeb.RoomChannel do
   @moduledoc """
   Chat channel used to verify WebSockets and Channels end to end.
 
+  The socket is already authenticated by `AppWeb.UserSocket`, so every
+  message is attributed to `socket.assigns.scope`'s account; the client
+  supplies only the body.
+
   Beyond chat itself, it exposes two diagnostics:
 
     * `"ping"` replies with the client timestamp it was given plus server
@@ -57,8 +61,12 @@ defmodule AppWeb.RoomChannel do
 
   @impl true
   def handle_info(:after_join, socket) do
+    # Keyed by user id with the display name in the metas, matching
+    # `AppWeb.ChatLive`: the two surfaces share a presence topic, so they have
+    # to agree on what a key means or the same person shows up twice.
     {:ok, _ref} =
-      Presence.track(socket, socket.assigns.nickname, %{
+      Presence.track(socket, to_string(socket.assigns.scope.user.id), %{
+        name: socket.assigns.nickname,
         online_at: System.system_time(:second),
         transport: transport_name(socket)
       })
@@ -76,7 +84,7 @@ defmodule AppWeb.RoomChannel do
 
   @impl true
   def handle_in("new_msg", %{"body" => body}, socket) do
-    case Chat.create_message(socket.assigns.room, socket.assigns.nickname, body) do
+    case Chat.create_message(socket.assigns.scope, socket.assigns.room, body) do
       {:ok, _message, durability} ->
         {:reply, {:ok, %{durability: durability}}, socket}
 

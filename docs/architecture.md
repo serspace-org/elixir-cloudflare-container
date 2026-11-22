@@ -44,7 +44,7 @@ The gateways have no automated tests against the real bindings — see [Known ga
 - **`app/`** — Phoenix 1.8.5 app (LiveView, Ecto, Bandit, Swoosh, Tailwind, esbuild)
   - `App.D1` — HTTP client for the Worker's private D1 gateway
   - `App.Tasks` — CRUD context over D1, scoped per user (`/tasks`)
-  - `App.Chat` — chat context over D1, broadcast with `Phoenix.PubSub` (`/chat/:room`, `/probe/:room`)
+  - `App.Chat` — chat context over D1, broadcast with `Phoenix.PubSub` (`/chat/:room`, `/probe/:room`); signed-in only, and messages carry the sender's account
   - `App.Accounts` — `mix phx.gen.auth` password authentication, moved off Ecto onto D1
   - `App.Mailer.Gateway` — Swoosh adapter that sends through the Worker's private mail gateway
   - `App.D1.LocalGateway` — dev/test stand-in for the Worker's D1 gateway, backed by local SQLite

@@ -7,6 +7,16 @@
     WebSocket, fanned out with <code>Phoenix.PubSub</code>
     and persisted in Cloudflare D1.
   </p>
+  <p class="mt-1 text-sm text-zinc-500">
+    Signed in as {@current_scope.user.email}, sending as
+    <span class="font-medium text-zinc-700">{@nickname}</span>
+    &middot;
+    <.link href={~p"/users/settings"} class="underline hover:text-zinc-900">Settings</.link>
+    &middot;
+    <.link href={~p"/users/log-out"} method="delete" class="underline hover:text-zinc-900">
+      Log out
+    </.link>
+  </p>
 
   <div class="mt-6 rounded-lg border border-zinc-200 p-4">
     <div class="flex flex-wrap items-center gap-2">
@@ -14,7 +24,7 @@
       <button
         id="new-session"
         phx-click="new_session"
-        class="ml-auto rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-50"
+        class="ml-auto rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium transition-colors hover:bg-zinc-50"
       >
         New session
       </button>
@@ -32,16 +42,14 @@
         type="button"
         phx-hook=".CopyLink"
         data-url={@share_url}
-        class="rounded-md border border-zinc-300 px-3 py-2 text-sm font-medium hover:bg-zinc-50"
+        class="rounded-md border border-zinc-300 px-3 py-2 text-sm font-medium transition-colors hover:bg-zinc-50"
       >
         Copy
       </button>
     </div>
     <p class="mt-2 text-xs text-zinc-500">
-      Anyone opening that link joins this room. The raw channel client for the same room is at <a
-        href={@probe_url}
-        class="underline"
-      >{@probe_url}</a>.
+      Anyone with an account who opens that link joins this room. The raw channel client for
+      the same room is at <a href={@probe_url} class="underline">{@probe_url}</a>.
     </p>
 
     <script :type={Phoenix.LiveView.ColocatedHook} name=".CopyLink">
@@ -63,24 +71,40 @@
     </script>
   </div>
 
-  <div
+  <div class="mt-6 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+    <span class="text-zinc-500">In the room</span>
+    <span
+      :for={name <- @present_names}
+      class="rounded-full bg-zinc-100 px-2.5 py-0.5 font-medium text-zinc-700"
+    >
+      {name}
+    </span>
+    <span :if={@present_names == []} class="text-zinc-400">nobody yet</span>
+  </div>
+
+  <%!-- Collapsed so the page reads as chat, but forced open the moment the
+        transport is not a WebSocket: catching that silent degradation is the
+        reason this page exists. --%>
+  <details
     id="transport-info"
     phx-hook="TransportInfo"
+    open={@websocket? == false}
     class={[
-      "mt-6 rounded-lg border p-4 text-sm",
+      "group mt-4 rounded-lg border p-4 text-sm",
       @websocket? == false && "border-red-300 bg-red-50",
       @websocket? != false && "border-zinc-200"
     ]}
   >
+    <summary class="cursor-pointer font-medium text-zinc-700 group-open:mb-3">
+      Diagnostics
+      <span :if={@websocket? == false} class="font-semibold text-red-700">
+        — not a WebSocket, the upgrade is failing
+      </span>
+    </summary>
     <dl class="grid grid-cols-2 gap-x-4 gap-y-2">
       <dt class="text-zinc-500">Transport</dt>
-      <dd id="chat-transport" class="font-mono">
-        {@transport || "measuring…"}
-        <span :if={@websocket? == false} class="font-sans font-semibold text-red-700">
-          — not a WebSocket, the upgrade is failing
-        </span>
-      </dd>
-      <dt class="text-zinc-500">Nickname</dt>
+      <dd id="chat-transport" class="font-mono">{@transport || "measuring…"}</dd>
+      <dt class="text-zinc-500">Sending as</dt>
       <dd id="chat-nickname" class="font-mono">{@nickname}</dd>
       <dt class="text-zinc-500">Online now</dt>
       <dd id="chat-present" class="font-mono">{@present}</dd>
@@ -93,57 +117,97 @@
         {if @d1_ready, do: "D1", else: "ephemeral (D1 unreachable)"}
       </dd>
     </dl>
-  </div>
+  </details>
 
   <p :if={@error} id="chat-error" class="mt-4 text-sm text-red-700">{@error}</p>
-
-  <form id="rename-form" phx-submit="rename" class="mt-6 flex gap-2">
-    <input
-      id="rename-input"
-      type="text"
-      name="nickname"
-      value={@nickname}
-      maxlength="64"
-      aria-label="Your name"
-      class="w-48 rounded-md border border-zinc-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-500"
-    />
-    <button type="submit" class="text-sm text-zinc-600 underline hover:text-zinc-900">
-      Rename
-    </button>
-  </form>
-
-  <form id="chat-form" phx-submit="send" class="mt-3 flex gap-2">
-    <input
-      id="chat-input"
-      type="text"
-      name="body"
-      placeholder="Say something"
-      autocomplete="off"
-      required
-      maxlength="2000"
-      class="flex-1 rounded-md border border-zinc-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-zinc-500"
-    />
-    <button
-      type="submit"
-      class="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700"
-    >
-      Send
-    </button>
-  </form>
 
   <div
     id="chat-messages"
     phx-update="stream"
-    class="mt-6 divide-y divide-zinc-200 border-t border-zinc-200 text-sm empty:hidden"
+    phx-hook=".StickToBottom"
+    class="mt-6 max-h-96 space-y-3 overflow-y-auto border-t border-zinc-200 py-4"
   >
-    <div :for={{dom_id, message} <- @streams.messages} id={dom_id} class="py-2">
-      <span class="font-mono text-zinc-500">{message.nickname}:</span>
-      <span>{message.body}</span>
+    <div
+      :for={{dom_id, message} <- @streams.messages}
+      id={dom_id}
+      class={[
+        "flex flex-col",
+        if(own_message?(@current_scope, message), do: "items-end", else: "items-start")
+      ]}
+    >
+      <div class="flex items-baseline gap-2 text-xs text-zinc-500">
+        <span class="font-medium text-zinc-600">
+          {if own_message?(@current_scope, message), do: "You", else: message.nickname}
+        </span>
+        <time
+          datetime={message_datetime(message.inserted_at)}
+          title={message_title(message.inserted_at)}
+        >
+          {message_time(message.inserted_at)}
+        </time>
+      </div>
+      <p class={[
+        "mt-1 max-w-[80%] rounded-2xl px-3 py-2 text-sm break-words",
+        if(own_message?(@current_scope, message),
+          do: "bg-zinc-900 text-white",
+          else: "bg-zinc-100 text-zinc-900"
+        )
+      ]}>
+        {message.body}
+      </p>
     </div>
   </div>
 
-  <p :if={@message_count == 0} class="mt-6 text-sm text-zinc-500">
+  <%!-- A hook that only reacts to server-rendered content, so it must not
+        carry phx-update="ignore" — that would stop LiveView updating the very
+        list it scrolls. --%>
+  <script :type={Phoenix.LiveView.ColocatedHook} name=".StickToBottom">
+    export default {
+      mounted() { this.stick() },
+      updated() { this.stick() },
+      stick() {
+        // Only follow along when the reader is already at the bottom, so
+        // scrolling back through history is not yanked away.
+        const slack = this.el.scrollHeight - this.el.clientHeight - this.el.scrollTop
+        if (slack < 120) { this.el.scrollTop = this.el.scrollHeight }
+      }
+    }
+  </script>
+
+  <p :if={@message_count == 0} class="mt-2 text-sm text-zinc-500">
     No messages yet — send one, then open the share link in another tab and watch it arrive
     over the other socket.
   </p>
+
+  <form id="chat-form" phx-submit="send" class="mt-4 flex gap-2">
+    <%!-- Cleared by the server after a send rather than by the submit
+          handler, so the box still holds what you typed if the message was
+          rejected. --%>
+    <input
+      id="chat-input"
+      type="text"
+      name="body"
+      phx-hook=".ClearOnSent"
+      placeholder="Say something"
+      autocomplete="off"
+      required
+      maxlength="2000"
+      class="flex-1 rounded-md border border-zinc-300 px-3 py-2 text-sm focus:ring-2 focus:ring-zinc-500 focus:outline-none"
+    />
+    <button
+      type="submit"
+      phx-disable-with="Sending…"
+      class="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-700"
+    >
+      Send
+    </button>
+
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".ClearOnSent">
+      export default {
+        mounted() {
+          this.handleEvent("chat:sent", () => { this.el.value = ""; this.el.focus() })
+        }
+      }
+    </script>
+  </form>
 </div>

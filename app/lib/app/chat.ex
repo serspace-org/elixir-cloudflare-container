@@ -7,12 +7,25 @@ defmodule App.Chat do
   and the local PubSub adapter is enough) and persisted to Cloudflare D1
   through the private gateway in `App.D1`.
 
+  Sending takes an `App.Accounts.Scope` as its first argument and *matches*
+  it, the way `App.Tasks` does: `/chat` and `/probe` both require a logged-in
+  account, so the sender is the session's user and a scope without one raises
+  here rather than writing an unattributed message.
+
+  Reading does not take a scope, and that difference is deliberate. A task is
+  owned data; a room is a shared space whose slug is the capability, so its
+  history is returned whole to anyone holding the link. Filtering reads by
+  sender would also break the two-surface check this demo exists for, where a
+  message typed on `/chat` has to show up on `/probe`.
+
   Persistence is best-effort on purpose: when the gateway is unreachable —
   running `mix phx.server` without `wrangler dev`, say — `create_message/3`
   still returns a message struct so the transport can be exercised without a
   database. Callers can tell the two apart via `d1_available?/0`.
   """
 
+  alias App.Accounts.Scope
+  alias App.Accounts.User
   alias App.Chat.Message
   alias App.D1
   alias Ecto.Changeset
@@ -84,18 +97,31 @@ defmodule App.Chat do
   end
 
   @doc """
-  Validates, persists and broadcasts a message.
+  The name a message is labelled with when sent by `scope`'s user.
+
+  Stored on the row alongside `user_id`, so renaming an account never
+  rewrites history.
+  """
+  @spec sender_name(Scope.t()) :: String.t()
+  def sender_name(%Scope{user: %User{} = user}), do: User.display_name(user)
+
+  @doc """
+  Validates, persists and broadcasts a message sent by `scope`'s user.
 
   Broadcasts `{:new_message, message}` on the room topic. Returns
   `{:ok, message, :persisted | :ephemeral}`, or `{:error, changeset}` when
   validation fails — a failed write is never an error for the caller, since
   the point of this demo is the transport.
+
+  `user_id` and `nickname` are set from the scope, never cast from the
+  caller's attributes: a client that could name itself could impersonate
+  another account in the transcript.
   """
-  @spec create_message(String.t(), String.t(), String.t()) ::
+  @spec create_message(Scope.t(), String.t(), String.t()) ::
           {:ok, Message.t(), :persisted | :ephemeral} | {:error, Changeset.t()}
-  def create_message(room, nickname, body) do
-    %Message{}
-    |> Message.changeset(%{room: room, nickname: nickname, body: body})
+  def create_message(%Scope{user: %User{id: user_id}} = scope, room, body) do
+    %Message{user_id: user_id, nickname: sender_name(scope)}
+    |> Message.changeset(%{room: room, body: body})
     |> Changeset.apply_action(:insert)
     |> case do
       {:ok, message} ->
@@ -111,7 +137,12 @@ defmodule App.Chat do
   ## Persistence
 
   defp persist(%Message{} = message) do
-    case D1.create_message(message.room, message.nickname, message.body) do
+    case D1.create_message(
+           message.user_id,
+           message.room,
+           message.nickname,
+           message.body
+         ) do
       {:ok, row} ->
         {to_message(row), :persisted}
 
@@ -130,6 +161,7 @@ defmodule App.Chat do
     %Message{
       id: row["id"],
       room: row["room"],
+      user_id: row["user_id"],
       nickname: row["nickname"],
       body: row["body"],
       inserted_at: parse_timestamp(row["inserted_at"])

@@ -14,19 +14,27 @@ defmodule App.Chat.Message do
   @primary_key {:id, :integer, []}
   embedded_schema do
     field :room, :string
+    field :user_id, :integer
     field :nickname, :string
     field :body, :string
     field :inserted_at, :naive_datetime
   end
 
-  @doc "Casts and validates message attributes."
+  @doc """
+  Casts and validates message attributes.
+
+  `user_id` and `nickname` are deliberately absent from `cast/3`: they are
+  the sender's identity, set from the `App.Accounts.Scope` in
+  `App.Chat.create_message/3`, and casting them would let a client label a
+  message with someone else's account. They are still validated, so a
+  message built without a sender fails here rather than at the gateway.
+  """
   def changeset(message, attrs) do
     message
-    |> cast(attrs, [:room, :nickname, :body])
+    |> cast(attrs, [:room, :body])
     |> update_change(:room, &String.trim/1)
-    |> update_change(:nickname, &String.trim/1)
     |> update_change(:body, &String.trim/1)
-    |> validate_required([:room, :nickname, :body])
+    |> validate_required([:room, :user_id, :nickname, :body])
     |> validate_length(:room, min: 1, max: 64)
     |> validate_length(:nickname, min: 1, max: 64)
     |> validate_length(:body, min: 1, max: 2000)

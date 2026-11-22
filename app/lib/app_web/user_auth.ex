@@ -26,6 +26,11 @@ defmodule AppWeb.UserAuth do
   # the reissuing of tokens completely.
   @session_reissue_age_in_days 7
 
+  # Salt for the `/socket` token minted by `user_socket_token/1`. Its lifetime
+  # matches the remember-me cookie above, so a socket token never outlives the
+  # session it was handed out with.
+  @user_socket_salt "user socket"
+
   @doc """
   Logs the user in.
 
@@ -52,6 +57,18 @@ defmodule AppWeb.UserAuth do
 
     if live_socket_id = get_session(conn, :live_socket_id) do
       AppWeb.Endpoint.broadcast(live_socket_id, "disconnect", %{})
+    end
+
+    # The LiveView socket id above is per session token; `AppWeb.UserSocket`
+    # is identified per user, since the token it is handed carries only an id.
+    # Both have to be closed, or a `/probe` tab keeps its channel — and its
+    # authenticated scope — after the session behind it is gone.
+    case conn.assigns[:current_scope] do
+      %Scope{user: %Accounts.User{id: user_id}} ->
+        AppWeb.Endpoint.broadcast(user_socket_topic(user_id), "disconnect", %{})
+
+      _no_user ->
+        :ok
     end
 
     conn
@@ -168,6 +185,47 @@ defmodule AppWeb.UserAuth do
     |> put_session(:user_token, token)
     |> put_session(:live_socket_id, user_session_topic(token))
   end
+
+  @doc """
+  Signs a short-lived token identifying `scope`'s user to `AppWeb.UserSocket`.
+
+  `/socket` is a plain `Phoenix.Socket`, not a LiveView one, so it cannot
+  read the session: `connect/3` only sees params and connect info. The
+  standard answer is this — mint a signed token for the page to hand back.
+  It is put in a `<meta name="user-token">` tag by the root layout and read
+  by `assets/js/channel_probe.js`.
+
+  Returns `nil` for a scope with no user, so the tag is simply absent and the
+  probe page can say so instead of opening a socket that will be refused.
+  """
+  def user_socket_token(%Scope{user: %Accounts.User{} = user}) do
+    Phoenix.Token.sign(AppWeb.Endpoint, @user_socket_salt, user.id)
+  end
+
+  def user_socket_token(_scope), do: nil
+
+  @doc """
+  Verifies a token minted by `user_socket_token/1`.
+
+  Returns `{:ok, user_id}`, or `{:error, reason}` for a token that is
+  missing, malformed, signed by someone else or older than the session it
+  was minted alongside.
+  """
+  def verify_user_socket_token(token) when is_binary(token) do
+    Phoenix.Token.verify(AppWeb.Endpoint, @user_socket_salt, token,
+      max_age: @max_cookie_age_in_days * 24 * 60 * 60
+    )
+  end
+
+  def verify_user_socket_token(_token), do: {:error, :missing}
+
+  @doc """
+  The `Phoenix.Socket.id/1` topic for `user_id`'s raw channel sockets.
+
+  Broadcasting "disconnect" here closes every `/socket` connection that user
+  has open. See `AppWeb.UserSocket.id/1`.
+  """
+  def user_socket_topic(user_id), do: "users_socket:#{user_id}"
 
   @doc """
   Disconnects existing sockets for the given tokens.
