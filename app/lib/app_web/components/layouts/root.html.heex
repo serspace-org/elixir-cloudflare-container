@@ -4,6 +4,12 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="csrf-token" content={get_csrf_token()} />
+    <%!-- Read by assets/js/channel_probe.js. `/socket` is a plain Phoenix
+          socket and cannot see the session, so it authenticates with this
+          signed token instead; it is absent for a guest. --%>
+    <%= if token = AppWeb.UserAuth.user_socket_token(@current_scope) do %>
+      <meta name="user-token" content={token} />
+    <% end %>
     <.live_title default="App" suffix=" · Phoenix Framework">
       {assigns[:page_title]}
     </.live_title>

@@ -47,6 +47,12 @@ curl https://<your-host>/health
 # ok
 ```
 
-`just smoke https://<your-host>` runs the scripted checks — WebSocket handshake, channel join, broadcast round trip, and the form-POST redirect. Then register at `/users/register` and open `/tasks` for the D1-backed CRUD demo — tasks belong to the user who created them — and `/chat` for the WebSocket demo, which needs no account.
+Register at `/users/register` first: both demos need an account now. Then `just smoke https://<your-host>` runs the scripted checks — log-in form POST and its redirect through the proxy, WebSocket handshake, channel join, broadcast round trip — with the account in `SMOKE_EMAIL` and `SMOKE_PASSWORD`:
+
+```bash
+SMOKE_EMAIL=you@example.com SMOKE_PASSWORD=... just smoke https://<your-host>
+```
+
+In CI the same two values are repository *secrets* (alongside the `SMOKE_URL` variable); without them the post-deploy smoke step is skipped. Then open `/tasks` for the D1-backed CRUD demo — tasks belong to the user who created them — and `/chat` for the WebSocket demo, where a room is shared by everyone holding its link.
 
 The first request may take 5–15 seconds (container cold start). Subsequent requests are instant while the container is warm.

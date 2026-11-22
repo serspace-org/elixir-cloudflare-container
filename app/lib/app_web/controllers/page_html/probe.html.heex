@@ -7,6 +7,10 @@
     long-poll fallback. If this page connects, WebSockets survive the Worker and
     Durable Object hop.
   </p>
+  <p class="mt-1 text-sm text-zinc-500">
+    Signed in as {@current_scope.user.email}, sending as <span class="font-medium text-zinc-700">{@nickname}</span>. The socket authenticates
+    with a signed token from this page, not the session cookie.
+  </p>
 
   <div class="mt-6 rounded-lg border border-zinc-200 p-4 text-sm">
     <p class="text-zinc-500">Share this session</p>
@@ -18,7 +22,7 @@
       class="mt-2 w-full rounded-md border border-zinc-300 bg-zinc-50 px-3 py-2 font-mono text-xs"
     />
     <p class="mt-2 text-xs text-zinc-500">
-      Anyone opening that link joins this room. The LiveView client for the same room is at <a
+      Anyone with an account who opens that link joins this room. The LiveView client for the same room is at <a
         href={@share_url}
         class="underline"
       >{@share_url}</a>.
@@ -31,7 +35,7 @@
       <dd id="probe-state" class="font-mono">connecting…</dd>
       <dt class="text-zinc-500">Transport</dt>
       <dd id="probe-transport" class="font-mono">—</dd>
-      <dt class="text-zinc-500">Nickname</dt>
+      <dt class="text-zinc-500">Sending as</dt>
       <dd id="probe-nickname" class="font-mono">—</dd>
       <dt class="text-zinc-500">Round trip</dt>
       <dd id="probe-rtt" class="font-mono">—</dd>

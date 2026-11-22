@@ -14,12 +14,17 @@ defmodule AppWeb.PageController do
 
   Keeping it off LiveView means a failure here points at the WebSocket
   transport or the channel, not at LiveView.
+
+  Behind the `:require_authenticated_user` plug, like `/chat`: the socket it
+  opens needs an account, and the token it authenticates with is minted into
+  the root layout for the signed-in scope.
   """
   def probe(conn, params) do
     room = App.Chat.room_or_default(params["room"])
 
     render(conn, :probe,
       room: room,
+      nickname: App.Chat.sender_name(conn.assigns.current_scope),
       share_url: url(~p"/chat/#{room}"),
       probe_url: url(~p"/probe/#{room}")
     )

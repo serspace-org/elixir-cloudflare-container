@@ -29,6 +29,21 @@ defmodule App.Accounts.User do
   end
 
   @doc """
+  A short, human-readable name for `user`.
+
+  Derived from the email's local part rather than stored: chat needs
+  something friendlier than an address to label a message with, and a
+  `display_name` column would be a schema change, a gateway route and a
+  settings form for no behaviour this app has yet. The full address is still
+  what identifies an account — see `AppWeb.ChatLive`, which shows it on
+  hover.
+  """
+  @spec display_name(%__MODULE__{}) :: String.t()
+  def display_name(%__MODULE__{email: email}) when is_binary(email) do
+    email |> String.split("@") |> hd() |> String.slice(0, 64)
+  end
+
+  @doc """
   A user changeset for registering with an email and a password.
 
   Registration collects a password so an account is usable the moment it is

@@ -9,6 +9,11 @@
 //
 // Usage: node scripts/ws-smoke.mjs https://your-worker.example.com
 //
+// /socket requires a logged-in account, so SMOKE_EMAIL and SMOKE_PASSWORD
+// must name one (see docs/deploy.md). The run logs in over HTTP, which also
+// exercises the form-POST redirect through the proxy, then reads the signed
+// socket token out of the page the way the browser does.
+//
 // Uses Node's built-in WebSocket (Node 22+); no dependencies.
 
 const target = process.argv[2] || process.env.SMOKE_URL
@@ -19,6 +24,12 @@ if (!target) {
 
 const TIMEOUT_MS = Number(process.env.SMOKE_TIMEOUT_MS || 60_000)
 const ROOM = process.env.SMOKE_ROOM || "lobby"
+const EMAIL = process.env.SMOKE_EMAIL
+const PASSWORD = process.env.SMOKE_PASSWORD
+if (!EMAIL || !PASSWORD) {
+  console.error("SMOKE_EMAIL and SMOKE_PASSWORD must name an account: /socket requires a login")
+  process.exit(2)
+}
 const body = `ws-smoke ${process.env.GITHUB_SHA || "local"} ${Date.now()}`
 
 const base = new URL(target)
@@ -44,8 +55,11 @@ pass(`node ${sockets.node}, uptime ${Math.round(sockets.node_uptime_ms / 1000)}s
 // body arrives as a stream and cannot be replayed — which Cloudflare served
 // as error 1101. Every auth form POST redirects, so this class of bug is one
 // deploy away whenever the proxy changes.
+const cookiesFrom = response =>
+  (response.headers.getSetCookie?.() || []).map(c => c.split(";")[0]).join("; ")
+
 const loginPage = await fetch(new URL("/users/log-in", base))
-const cookie = (loginPage.headers.getSetCookie?.() || []).map(c => c.split(";")[0]).join("; ")
+let cookie = cookiesFrom(loginPage)
 const csrf = ((await loginPage.text()).match(/name="csrf-token" content="([^"]+)"/) || [])[1]
 if (!csrf) { fail("could not read a CSRF token from /users/log-in") }
 
@@ -53,20 +67,33 @@ const redirecting = await fetch(new URL("/users/log-in", base), {
   method: "POST",
   redirect: "manual",
   headers: {"content-type": "application/x-www-form-urlencoded", cookie},
-  // Deliberately wrong credentials: the point is the 302, not a session.
   body: new URLSearchParams({
     _csrf_token: csrf,
-    "user[email]": "ws-smoke-nobody@example.com",
-    "user[password]": "definitely not the password",
+    "user[email]": EMAIL,
+    "user[password]": PASSWORD,
   }).toString(),
 })
 if (redirecting.status !== 302) {
   fail(`POST /users/log-in returned ${redirecting.status}, expected a 302 passed through`)
 }
-if (!redirecting.headers.get("location")) {
+const location = redirecting.headers.get("location")
+if (!location) {
   fail("POST /users/log-in returned a 302 with no Location header")
 }
-pass(`form POST redirect passed through (302 -> ${redirecting.headers.get("location")})`)
+if (location.endsWith("/users/log-in")) {
+  fail("log-in bounced back to the form: SMOKE_EMAIL/SMOKE_PASSWORD were rejected")
+}
+cookie = cookiesFrom(redirecting) || cookie
+pass(`form POST redirect passed through (302 -> ${location})`)
+
+// The socket is a plain Phoenix socket and cannot read the session, so the
+// page carries a signed token for it — same handshake the browser does.
+const chatPage = await fetch(new URL(`/chat/${ROOM}`, base), {headers: {cookie}})
+if (!chatPage.ok) { fail(`GET /chat/${ROOM} returned ${chatPage.status} while logged in`) }
+const userToken = ((await chatPage.text()).match(/name="user-token" content="([^"]+)"/) || [])[1]
+if (!userToken) { fail(`no socket token on /chat/${ROOM}: the session did not stick`) }
+wsUrl.searchParams.set("user_token", userToken)
+pass("read a socket token from the signed-in page")
 
 const socket = new WebSocket(wsUrl)
 let ref = 0

@@ -31,7 +31,7 @@ export interface Env {
 type TaskRow = Record<string, unknown>;
 
 const TASK_COLUMNS = "id, user_id, title, completed, inserted_at, updated_at";
-const MESSAGE_COLUMNS = "id, room, nickname, body, inserted_at";
+const MESSAGE_COLUMNS = "id, room, user_id, nickname, body, inserted_at";
 const MESSAGE_LIMIT_DEFAULT = 50;
 const MESSAGE_LIMIT_MAX = 200;
 const USER_COLUMNS = "id, email, hashed_password, confirmed_at, inserted_at, updated_at";
@@ -58,7 +58,7 @@ const CONTEXT_MAX_LENGTH = 100;
  *   PATCH  /tasks/:id?user_id= -> {task: row}       body: {title?, completed?}
  *   DELETE /tasks/:id?user_id= -> {deleted: true} | 404
  *   GET    /messages?room=&limit= -> {messages: [row]}  (oldest first)
- *   POST   /messages   -> 201 {message: row}  body: {room, nickname, body}
+ *   POST   /messages   -> 201 {message: row}  body: {room, user_id, nickname, body}
  *   GET    /users?email=  -> {user: row} | 404   (email matched case-insensitively)
  *   GET    /users/:id  -> {user: row} | 404
  *   POST   /users      -> 201 {user: row} | 409  body: {email, hashed_password?,
@@ -381,6 +381,10 @@ export class D1Gateway extends WorkerEntrypoint<Env> {
     const room = readText(payload.room, 64);
     const nickname = readText(payload.nickname, 64);
     const body = readText(payload.body, 2000);
+    // The sender is the session's user, not a client-supplied name: `/chat`
+    // and `/probe` both require a logged-in account now, so a message with no
+    // author is a bug rather than an anonymous visitor.
+    const userId = readId(payload.user_id);
 
     if (room === null || nickname === null || body === null) {
       return Response.json(
@@ -388,14 +392,17 @@ export class D1Gateway extends WorkerEntrypoint<Env> {
         { status: 400 },
       );
     }
+    if (userId === null) {
+      return Response.json({ error: "user_id is required" }, { status: 400 });
+    }
 
     const row = await firstRow(
       db
         .prepare(
-          `INSERT INTO messages (room, nickname, body) VALUES (?1, ?2, ?3) ` +
+          `INSERT INTO messages (room, user_id, nickname, body) VALUES (?1, ?2, ?3, ?4) ` +
             `RETURNING ${MESSAGE_COLUMNS}`,
         )
-        .bind(room, nickname, body),
+        .bind(room, userId, nickname, body),
     );
     return Response.json({ message: row }, { status: 201 });
   }
@@ -604,8 +611,10 @@ function readId(value: unknown): number | null {
  * supported" rather than treating it as NULL — so every nullable column needs
  * this on the way in. The local stand-in does not care, because Exqlite binds
  * `nil` for the same case, which is exactly why the gap reached production:
- * `tasks` and `messages` have no nullable columns, so nothing bound an absent
- * value until `users` and `users_tokens` arrived.
+ * `tasks` and `messages` had no nullable columns, so nothing bound an absent
+ * value until `users` and `users_tokens` arrived. (`tasks.user_id` and
+ * `messages.user_id` are nullable now, but both are required on every route
+ * that writes them and so are never bound as absent.)
  */
 function bindable<T>(value: T | undefined): T | null {
   return value === undefined ? null : value;

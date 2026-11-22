@@ -15,7 +15,18 @@ export function startChannelProbe() {
   if (!root) { return null }
 
   const room = root.dataset.room || "lobby"
-  const socket = new Socket("/socket", {params: {}})
+
+  // /socket requires a logged-in account and cannot read the session, so the
+  // root layout mints a signed token into <meta name="user-token">. Without
+  // one the upgrade is refused, which would show up here as an unexplained
+  // error loop — so say what happened instead of connecting.
+  const userToken = document.querySelector("meta[name='user-token']")?.getAttribute("content")
+  if (!userToken) {
+    text("probe-state", "not logged in — no socket token on this page")
+    return null
+  }
+
+  const socket = new Socket("/socket", {params: {user_token: userToken}})
   let reconnects = 0
   let opened = false
 

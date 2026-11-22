@@ -21,13 +21,6 @@ defmodule AppWeb.Router do
     pipe_through :browser
 
     get "/", PageController, :home
-    live "/chat", ChatLive, :index
-    live "/chat/:room", ChatLive, :index
-
-    # Plain (non-LiveView) page driving the raw channel client, so a channel
-    # failure can be told apart from a LiveView failure.
-    get "/probe", PageController, :probe
-    get "/probe/:room", PageController, :probe
   end
 
   # Health check endpoint (used by the Worker for readiness checks)
@@ -69,11 +62,25 @@ defmodule AppWeb.Router do
       # `@current_scope.user` in `AppWeb.TaskLive`.
       live "/tasks", TaskLive, :index
 
+      # Chat is signed-in too, for the same reason: a message now carries the
+      # account that sent it (`App.Chat.create_message/3` matches the scope),
+      # so the plug guarantees a `@current_scope.user` on the initial request
+      # and the `on_mount` hook guarantees it on the socket.
+      live "/chat", ChatLive, :index
+      live "/chat/:room", ChatLive, :index
+
       live "/users/settings", UserLive.Settings, :edit
       live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email
     end
 
     post "/users/update-password", UserSessionController, :update_password
+
+    # Plain (non-LiveView) page driving the raw channel client, so a channel
+    # failure can be told apart from a LiveView failure. A controller route,
+    # so the `:require_authenticated_user` plug above is what guards it; the
+    # socket it opens is authenticated separately, by `AppWeb.UserSocket`.
+    get "/probe", PageController, :probe
+    get "/probe/:room", PageController, :probe
   end
 
   scope "/", AppWeb do

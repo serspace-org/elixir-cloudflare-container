@@ -13,7 +13,7 @@ if Mix.env() != :prod do
     alias App.D1.LocalGateway
 
     @task_columns "id, user_id, title, completed, inserted_at, updated_at"
-    @message_columns "id, room, nickname, body, inserted_at"
+    @message_columns "id, room, user_id, nickname, body, inserted_at"
     @message_limit_default 50
     @message_limit_max 200
     @user_columns "id, email, hashed_password, confirmed_at, inserted_at, updated_at"
@@ -50,20 +50,26 @@ if Mix.env() != :prod do
       room = to_text(conn.params["room"], 64)
       nickname = to_text(conn.params["nickname"], 64)
       body = to_text(conn.params["body"], 2000)
+      user_id = parse_id(conn.params["user_id"])
 
-      if is_nil(room) or is_nil(nickname) or is_nil(body) do
-        send_json(conn, 400, %{
-          error: "room, nickname and body must be non-empty strings within their length limits"
-        })
-      else
-        {:ok, [row]} =
-          LocalGateway.query(
-            "INSERT INTO messages (room, nickname, body) VALUES (?1, ?2, ?3) " <>
-              "RETURNING #{@message_columns}",
-            [room, nickname, body]
-          )
+      cond do
+        is_nil(room) or is_nil(nickname) or is_nil(body) ->
+          send_json(conn, 400, %{
+            error: "room, nickname and body must be non-empty strings within their length limits"
+          })
 
-        send_json(conn, 201, %{message: row})
+        is_nil(user_id) ->
+          send_json(conn, 400, %{error: "user_id is required"})
+
+        true ->
+          {:ok, [row]} =
+            LocalGateway.query(
+              "INSERT INTO messages (room, user_id, nickname, body) VALUES (?1, ?2, ?3, ?4) " <>
+                "RETURNING #{@message_columns}",
+              [room, user_id, nickname, body]
+            )
+
+          send_json(conn, 201, %{message: row})
       end
     end
 

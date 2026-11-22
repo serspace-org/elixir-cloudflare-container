@@ -1,0 +1,19 @@
+-- Attributes chat messages to the account that sent them. `/chat` and
+-- `/probe` now require a logged-in user (see `AppWeb.UserSocket` and the
+-- `:require_authenticated_user` scope in the router), so the sender is the
+-- session's user rather than a client-supplied nickname.
+--
+-- Additive on purpose: the previous version keeps serving traffic while a
+-- deploy rolls out, so the column is nullable rather than NOT NULL. Rows
+-- written before this migration therefore have a NULL `user_id` — they stay
+-- readable, since a room's history is deliberately *not* filtered by sender
+-- (a room is a shared space; the slug is the capability), and they render as
+-- the nickname they were written with.
+--
+-- `ON DELETE SET NULL` rather than 0004's `CASCADE`: a deleted account must
+-- not punch holes in a conversation other people are still reading.
+--
+-- `nickname` stays. It is the display name as of the write, so renaming an
+-- account does not rewrite its history, and the gateway's response shape is
+-- unchanged for pre-0005 rows.
+ALTER TABLE messages ADD COLUMN user_id INTEGER REFERENCES users (id) ON DELETE SET NULL;

@@ -1,11 +1,23 @@
 defmodule AppWeb.RoomChannelTest do
+  @moduledoc """
+  The channel assumes an authenticated socket: `AppWeb.UserSocket.connect/3`
+  has already resolved the account and assigned the scope, which is what
+  `AppWeb.UserSocketTest` covers. These tests therefore build the socket with
+  that scope directly rather than going through `connect/2`, so they can keep
+  stubbing the gateway's message routes in memory.
+  """
+
   use AppWeb.ChannelCase
 
+  alias App.Accounts.Scope
+  alias App.Accounts.User
   alias App.Chat
 
-  defp join_room(params \\ %{"nickname" => "tester"}, topic \\ "room:lobby") do
-    {:ok, socket} = connect(AppWeb.UserSocket, params)
-    subscribe_and_join(socket, topic, %{})
+  @scope Scope.for_user(%User{id: 1, email: "tester@example.com"})
+
+  defp join_room(topic \\ "room:lobby", scope \\ @scope) do
+    socket(AppWeb.UserSocket, nil, %{scope: scope, nickname: Chat.sender_name(scope)})
+    |> subscribe_and_join(topic, %{})
   end
 
   describe "join/3" do
@@ -30,29 +42,21 @@ defmodule AppWeb.RoomChannelTest do
       assert Enum.map(reply.messages, & &1.body) == ["first", "second"]
     end
 
-    test "assigns a nickname when the client sends none" do
-      stub_d1_messages()
-
-      assert {:ok, reply, _socket} = join_room(%{})
-      assert reply.nickname =~ ~r/^guest-[0-9a-f]{6}$/
-    end
-
     test "joins a shared session room" do
       stub_d1_messages()
       room = App.Chat.new_room()
 
-      assert {:ok, reply, _socket} = join_room(%{"nickname" => "guest"}, "room:" <> room)
+      assert {:ok, reply, _socket} = join_room("room:" <> room)
       assert reply.room == room
     end
 
     test "refuses a topic that is not a valid room slug" do
       stub_d1_messages()
-      {:ok, socket} = connect(AppWeb.UserSocket, %{})
 
       # Topics without the "room:" prefix are not routed to this channel at
       # all (see AppWeb.UserSocket), so they cannot even be attempted here.
       for topic <- ["room:", "room:Bad Room", "room:with/slash", "room:UPPER"] do
-        assert {:error, %{reason: "unknown room"}} = subscribe_and_join(socket, topic, %{}),
+        assert {:error, %{reason: "unknown room"}} = join_room(topic),
                "expected #{topic} to be refused"
       end
     end
@@ -75,8 +79,14 @@ defmodule AppWeb.RoomChannelTest do
       assert_reply ref, :ok, %{durability: :persisted}
       assert_push "new_msg", %{body: "hello from the channel", nickname: "tester"}
 
-      assert [%{"body" => "hello from the channel", "room" => "lobby"}] =
-               persisted_messages(store)
+      assert [
+               %{
+                 "body" => "hello from the channel",
+                 "room" => "lobby",
+                 "nickname" => "tester",
+                 "user_id" => 1
+               }
+             ] = persisted_messages(store)
     end
 
     test "reaches subscribers that are not channels (the LiveView path)" do

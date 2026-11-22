@@ -8,10 +8,18 @@ defmodule AppWeb.ChatLive do
   only works if the WebSocket upgrade, `Phoenix.PubSub` fan-out and
   `AppWeb.Presence` are all healthy inside the container.
 
-  The diagnostics card is the point of the page. `app.js` configures
+  Mounted in the `:require_authenticated_user` live session, so
+  `@current_scope.user` is always present. The sender of a message is that
+  user — `App.Chat.create_message/3` matches the scope — which is why there
+  is no nickname field: a name the client could set is a name it could
+  borrow from another account.
+
+  The diagnostics card stays the point of the page. `app.js` configures
   `longPollFallbackMs`, so a broken WebSocket upgrade degrades to
   long-polling without any visible symptom — the `TransportInfo` hook
   reports the transport actually in use so a degraded connection is obvious.
+  It is collapsed by default and forced open when the transport is not a
+  WebSocket.
   """
 
   use AppWeb, :live_view
@@ -22,7 +30,7 @@ defmodule AppWeb.ChatLive do
   @impl true
   def mount(params, _session, socket) do
     room = Chat.room_or_default(params["room"])
-    nickname = nickname(params)
+    scope = socket.assigns.current_scope
 
     {messages, d1_ready} =
       case Chat.recent_messages(room) do
@@ -36,8 +44,11 @@ defmodule AppWeb.ChatLive do
       # topic directly and handle the "presence_diff" broadcast below.
       Phoenix.PubSub.subscribe(App.PubSub, presence_topic(room))
 
+      # Keyed by user id, so two tabs of the same account are one person in
+      # the roster rather than two.
       {:ok, _ref} =
-        Presence.track(self(), presence_topic(room), nickname, %{
+        Presence.track(self(), presence_topic(room), presence_key(scope), %{
+          name: Chat.sender_name(scope),
           online_at: System.system_time(:second),
           transport: "liveview"
         })
@@ -50,17 +61,17 @@ defmodule AppWeb.ChatLive do
        room: room,
        share_url: url(~p"/chat/#{room}"),
        probe_url: url(~p"/probe/#{room}"),
-       nickname: nickname,
+       nickname: Chat.sender_name(scope),
        d1_ready: d1_ready,
        durability: nil,
        error: nil,
        transport: nil,
        websocket?: nil,
        reconnects: 0,
-       present: present_count(room),
        node_uptime_ms: uptime_ms(),
        message_count: length(messages)
      )
+     |> assign_presence()
      |> stream(:messages, messages)}
   end
 
@@ -68,38 +79,19 @@ defmodule AppWeb.ChatLive do
   # the old room's subscriptions and presence go with the old process.
   @impl true
   def handle_event("new_session", _params, socket) do
-    {:noreply,
-     push_navigate(socket, to: ~p"/chat/#{Chat.new_room()}?as=#{socket.assigns.nickname}")}
-  end
-
-  def handle_event("rename", %{"nickname" => nickname}, socket) do
-    case String.trim(nickname) do
-      "" ->
-        {:noreply, socket}
-
-      nickname ->
-        nickname = String.slice(nickname, 0, 64)
-        topic = presence_topic(socket.assigns.room)
-
-        Presence.untrack(self(), topic, socket.assigns.nickname)
-
-        {:ok, _ref} =
-          Presence.track(self(), topic, nickname, %{
-            online_at: System.system_time(:second),
-            transport: "liveview"
-          })
-
-        {:noreply, assign(socket, nickname: nickname)}
-    end
+    {:noreply, push_navigate(socket, to: ~p"/chat/#{Chat.new_room()}")}
   end
 
   def handle_event("send", %{"body" => body}, socket) do
-    case Chat.create_message(socket.assigns.room, socket.assigns.nickname, body) do
+    case Chat.create_message(socket.assigns.current_scope, socket.assigns.room, body) do
       {:ok, _message, durability} ->
         # The broadcast comes back through handle_info, so the message is
         # streamed there — proving the PubSub round trip rather than
         # short-circuiting it locally.
-        {:noreply, assign(socket, durability: durability, error: nil)}
+        {:noreply,
+         socket
+         |> assign(durability: durability, error: nil)
+         |> push_event("chat:sent", %{})}
 
       {:error, changeset} ->
         {:noreply, assign(socket, error: changeset_message(changeset))}
@@ -129,33 +121,55 @@ defmodule AppWeb.ChatLive do
   end
 
   def handle_info(%Phoenix.Socket.Broadcast{event: "presence_diff"}, socket) do
-    {:noreply, assign(socket, present: present_count(socket.assigns.room))}
+    {:noreply, assign_presence(socket)}
   end
 
   ## Helpers
 
-  # A client-supplied nickname, so the same person keeps their name across a
-  # "new session" navigation; falls back to a random one.
-  defp nickname(params) do
-    case params["as"] do
-      name when is_binary(name) ->
-        case String.trim(name) do
-          "" -> random_nickname()
-          trimmed -> String.slice(trimmed, 0, 64)
-        end
+  @doc """
+  True when `message` was sent by `scope`'s user.
 
-      _other ->
-        random_nickname()
-    end
+  Messages written before `user_id` existed have no sender, so they are
+  nobody's rather than everybody's.
+  """
+  def own_message?(scope, message) do
+    not is_nil(message.user_id) and message.user_id == scope.user.id
   end
 
-  defp random_nickname do
-    "live-" <> (:crypto.strong_rand_bytes(3) |> Base.encode16(case: :lower))
+  # Timestamps come out of D1 as UTC (SQLite's CURRENT_TIMESTAMP), and the
+  # server has no idea what the reader's zone is, so they are shown as UTC and
+  # labelled as such rather than quietly presented as local time.
+
+  @doc "A short clock time for a message, or nothing for an unparsed one."
+  def message_time(nil), do: ""
+  def message_time(%NaiveDateTime{} = inserted_at), do: Calendar.strftime(inserted_at, "%H:%M")
+
+  @doc "The full timestamp, for the `<time>` element's tooltip."
+  def message_title(nil), do: nil
+
+  def message_title(%NaiveDateTime{} = inserted_at),
+    do: Calendar.strftime(inserted_at, "%Y-%m-%d %H:%M:%S UTC")
+
+  @doc "The machine-readable timestamp for a message's `<time>` element."
+  def message_datetime(nil), do: nil
+
+  def message_datetime(%NaiveDateTime{} = inserted_at),
+    do: NaiveDateTime.to_iso8601(inserted_at) <> "Z"
+
+  defp assign_presence(socket) do
+    presences = Presence.list(presence_topic(socket.assigns.room))
+
+    names =
+      presences
+      |> Enum.map(fn {key, %{metas: [meta | _rest]}} -> Map.get(meta, :name, key) end)
+      |> Enum.sort()
+
+    assign(socket, present: map_size(presences), present_names: names)
   end
+
+  defp presence_key(scope), do: to_string(scope.user.id)
 
   defp presence_topic(room), do: "room:" <> room
-
-  defp present_count(room), do: map_size(Presence.list(presence_topic(room)))
 
   defp uptime_ms do
     {uptime_ms, _since_last} = :erlang.statistics(:wall_clock)

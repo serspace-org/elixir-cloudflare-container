@@ -36,7 +36,7 @@ pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --local
 pnpm exec wrangler d1 migrations apply phoenix-cf-container-db --remote
 ```
 
-Until the binding is configured, the Worker skips the gateway entirely: `/tasks` shows a setup notice and `/chat` runs in ephemeral mode, so nothing else breaks. (`/tasks` needs an account, which needs the database, so in that state the setup notice is what you get after logging in — which you cannot do either.)
+Until the binding is configured, the Worker skips the gateway entirely: `/tasks` shows a setup notice and `/chat` runs in ephemeral mode, so nothing else breaks. Both need an account, though, and an account needs the database — so in that state the setup notice is what you would get after logging in, which you cannot do either.
 
 ### 3. Email sending (optional)
 
@@ -101,7 +101,7 @@ just image-health           # curl /health
 
 Building for **your own** architecture is the point: it is the `linux/amd64` cross-build under QEMU that crashes the BEAM, so an arm64 build on an Apple Silicon Mac works fine and is a genuine check that the release compiles, the assets build, and the bcrypt NIF loads.
 
-What it cannot do is use the database. The release compiles `http://d1.internal` in (`Application.compile_env`), and nothing serves that hostname outside a Worker, so `/health/sockets` reports `d1_ready: false`, `/chat` runs ephemeral, **registering an account fails**, and `/tasks` — which now requires an account — only redirects to the log-in page. Every page still returns 200. For the full stack locally, use `just dev` or `just worker-dev`.
+What it cannot do is use the database. The release compiles `http://d1.internal` in (`Application.compile_env`), and nothing serves that hostname outside a Worker, so `/health/sockets` reports `d1_ready: false`, **registering an account fails**, and `/tasks`, `/chat` and `/probe` — which all require an account — only redirect to the log-in page. Every page still returns 200. For the full stack locally, use `just dev` or `just worker-dev`.
 
 ### How local persistence works
 

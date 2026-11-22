@@ -42,11 +42,23 @@ defmodule App.D1 do
     end
   end
 
-  @doc "Persists a chat message and returns its row."
-  @spec create_message(String.t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
-  def create_message(room, nickname, body)
-      when is_binary(room) and is_binary(nickname) and is_binary(body) do
-    case request(:post, "/messages", %{room: room, nickname: nickname, body: body}) do
+  @doc """
+  Persists a chat message sent by `user_id` and returns its row.
+
+  Unlike `list_messages/2`, which is room-scoped on purpose — a room is a
+  shared space, so its history is not filtered by sender — a write always
+  carries its author: `/chat` and `/probe` require a logged-in account.
+  """
+  @spec create_message(integer(), String.t(), String.t(), String.t()) ::
+          {:ok, map()} | {:error, term()}
+  def create_message(user_id, room, nickname, body)
+      when is_integer(user_id) and is_binary(room) and is_binary(nickname) and is_binary(body) do
+    case request(:post, "/messages", %{
+           room: room,
+           user_id: user_id,
+           nickname: nickname,
+           body: body
+         }) do
       {:ok, %{"message" => row}} -> {:ok, row}
       {:error, _reason} = error -> error
     end
